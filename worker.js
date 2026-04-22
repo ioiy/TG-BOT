@@ -34,11 +34,12 @@ export default {
         scope: { type: 'default' }
       });
 
-      // 2. 给管理员设置高级快捷菜单 (全量命令)
+      // 2. 给管理员设置高级快捷菜单 (新增了 blocklog)
       const adminCommands = [
         { command: 'chat', description: '📱 呼出联系人面板锁定单聊' },
         { command: 'end', description: '⏹ 退出锁定单聊模式' },
         { command: 'stats', description: '📊 查看系统运行状态数据' },
+        { command: 'blocklog', description: '🛡️ 查看详细拦截与错误记录' },
         { command: 'dnd', description: '🔕 开关: 离开/免打扰模式' },
         { command: 'media', description: '🖼️ 开关: 纯文本/媒体拦截' },
         { command: 'kwlist', description: '🤖 查看已设置的自动回复词' },
@@ -61,13 +62,30 @@ export default {
         });
       }
 
-      return new Response(res.ok ? `✅ 初始化成功!\n1. Webhook 绑定成功: ${webhookUrl}\n2. 机器人双轨菜单已更新 (包含了所有进阶指令)` : `❌ 失败: ${JSON.stringify(res)}`);
+      return new Response(res.ok ? `✅ 初始化成功!\n1. Webhook 绑定成功: ${webhookUrl}\n2. 机器人菜单已更新 (包含了最新的拦截日志功能)` : `❌ 失败: ${JSON.stringify(res)}`);
     }
 
     // 统计数据累加辅助函数
     const incStat = async (key) => {
       let val = await env.KV.get(`stat_${key}`) || 0;
       ctx.waitUntil(env.KV.put(`stat_${key}`, parseInt(val) + 1));
+    };
+
+    // 写入拦截日志辅助函数 (保留最近 20 条)
+    const addBlockLog = async (uid, name, reason, content) => {
+      try {
+        let logs = JSON.parse(await env.KV.get('log_blocks') || '[]');
+        // 生成北京时间 (UTC+8)
+        const d = new Date(Date.now() + 8 * 3600 * 1000);
+        const time = `${(d.getUTCMonth()+1).toString().padStart(2,'0')}-${d.getUTCDate().toString().padStart(2,'0')} ${d.getUTCHours().toString().padStart(2,'0')}:${d.getUTCMinutes().toString().padStart(2,'0')}`;
+        
+        let safeContent = (content || '').substring(0, 30);
+        if (content && content.length > 30) safeContent += '...';
+        
+        logs.unshift({ time, id: uid, name, reason, content: safeContent });
+        if (logs.length > 20) logs.pop(); 
+        ctx.waitUntil(env.KV.put('log_blocks', JSON.stringify(logs)));
+      } catch (e) {}
     };
 
     if (request.method === 'POST' && url.pathname === '/webhook') {
@@ -81,12 +99,16 @@ export default {
         const cb = update.callback_query;
         const userId = cb.from.id.toString();
         const isAdmin = ADMIN_IDS.includes(userId);
+        const userName = [cb.from.first_name, cb.from.last_name].filter(Boolean).join(' ') || '未知用户';
 
-        if (await env.KV.get(`banned_${userId}`)) return new Response('OK');
+        // 黑名单拦截检查
+        if (await env.KV.get(`banned_${userId}`)) {
+          ctx.waitUntil(addBlockLog(userId, userName, '黑名单拦截', '尝试点击验证按钮'));
+          return new Response('OK');
+        }
 
         if (cb.data === 'captcha_pass') {
           await env.KV.put(`user_${userId}`, 'verified');
-          const userName = [cb.from.first_name, cb.from.last_name].filter(Boolean).join(' ') || '未知用户';
           ctx.waitUntil(env.KV.put(`user_info_${userId}`, userName));
           ctx.waitUntil(incStat('verified'));
 
@@ -95,6 +117,10 @@ export default {
           
           await tgReq('editMessageText', { chat_id: userId, message_id: cb.message.message_id, text });
         } else if (cb.data === 'captcha_fail') {
+          // 验证码错误：记录错误日志并计入拦截
+          ctx.waitUntil(incStat('blocked'));
+          ctx.waitUntil(addBlockLog(userId, userName, '验证码错误', '点击了错误的答案选项'));
+          
           const lang = cb.from.language_code || 'en';
           await tgReq('answerCallbackQuery', { 
             callback_query_id: cb.id, 
@@ -126,6 +152,7 @@ export default {
         const userId = msg.from.id.toString();
         const msgId = msg.message_id;
         const isAdmin = ADMIN_IDS.includes(userId);
+        const userName = [msg.from.first_name, msg.from.last_name].filter(Boolean).join(' ') || '未知用户';
 
         // ----------------------------------------
         // 【管理员控制台逻辑】
@@ -170,8 +197,25 @@ export default {
               const msgs = await env.KV.get('stat_msgs') || 0;
               const dnd = await env.KV.get('sys_dnd') === 'on' ? '开启 🟢' : '关闭 🔴';
               const media = await env.KV.get('sys_mediafilter') === 'on' ? '开启 (拦截媒体) 🟢' : '关闭 🔴';
-              const text = `📊 **系统运行统计**\n\n✅ 已验证人数: \`${verified}\`\n🚫 拦截垃圾/错误: \`${blocked}\`\n💬 处理消息总数: \`${msgs}\`\n\n🔕 免打扰模式: ${dnd}\n🖼️ 纯文本模式: ${media}`;
+              const text = `📊 **系统运行统计**\n\n✅ 已验证人数: \`${verified}\`\n🚫 拦截总次数: \`${blocked}\`\n💬 处理消息总数: \`${msgs}\`\n\n🔕 免打扰模式: ${dnd}\n🖼️ 纯文本模式: ${media}\n\n👉 发送 \`/blocklog\` 查看最新详细拦截记录。`;
               await tgReq('sendMessage', { chat_id: userId, text, parse_mode: 'Markdown' });
+              return new Response('OK');
+            }
+
+            // 查看拦截日志面板
+            if (cmd === '/blocklog' || cmd === '/logs') {
+              const logsStr = await env.KV.get('log_blocks');
+              if (!logsStr) {
+                await tgReq('sendMessage', { chat_id: userId, text: '📭 暂无近期拦截与错误记录。' });
+                return new Response('OK');
+              }
+              const logs = JSON.parse(logsStr);
+              if (logs.length === 0) {
+                await tgReq('sendMessage', { chat_id: userId, text: '📭 暂无近期拦截与错误记录。' });
+                return new Response('OK');
+              }
+              const reply = logs.map((l, i) => `${i+1}. [${l.time}] 👤 **${l.name}** (\`${l.id}\`)\n   🚫 ${l.reason}: _${l.content}_`).join('\n\n');
+              await tgReq('sendMessage', { chat_id: userId, text: `🛡️ **近期拦截详情溯源 (最近20条)**\n\n${reply}`, parse_mode: 'Markdown' });
               return new Response('OK');
             }
 
@@ -306,7 +350,7 @@ export default {
                 });
                 if (res.ok) {
                   await tgReq('sendMessage', { chat_id: userId, text: `🔥 阅后即焚已发送给 ${activeChat}，25秒后撤回。` });
-                  // 等待 25 秒后双向撤回 (利用 ctx.waitUntil 防止 Worker 休眠)
+                  // 等待 25 秒后双向撤回
                   ctx.waitUntil(new Promise(r => setTimeout(r, 25000)).then(() => {
                     tgReq('deleteMessage', { chat_id: activeChat, message_id: res.result.message_id });
                   }));
@@ -346,11 +390,17 @@ export default {
         ctx.waitUntil(incStat('msgs')); // 统计总消息
 
         // 1. 黑名单检查
-        if (await env.KV.get(`banned_${userId}`)) return new Response('OK');
+        if (await env.KV.get(`banned_${userId}`)) {
+           ctx.waitUntil(incStat('blocked'));
+           ctx.waitUntil(addBlockLog(userId, userName, '黑名单拦截', msg.text || '[媒体消息]'));
+           return new Response('OK');
+        }
 
         // 2. 媒体拦截检查
         const mediaFilterOn = await env.KV.get('sys_mediafilter') === 'on';
         if (mediaFilterOn && !msg.text) {
+           ctx.waitUntil(incStat('blocked'));
+           ctx.waitUntil(addBlockLog(userId, userName, '媒体拦截', '尝试发送图片/视频/文件'));
            const lang = msg.from.language_code || 'en';
            await tgReq('sendMessage', { 
              chat_id: userId, 
@@ -365,18 +415,16 @@ export default {
         const lang = msg.from.language_code || 'en';
         const isZh = lang.startsWith('zh');
 
-        // 拦截访客的 /start 命令，避免干扰管理员
+        // 拦截访客的 /start 命令
         if (msg.text === '/start') {
            if (isVerified === 'verified') {
              await tgReq('sendMessage', { chat_id: userId, text: isZh ? '✅ 您已通过验证，可以直接发送消息。' : '✅ Verified. You can send messages directly.' });
              return new Response('OK');
            }
-           // 若未验证，则顺延到下方的生成算术题逻辑
         }
 
         if (isVerified === 'verified') {
           // 记录基础信息
-          const userName = [msg.from.first_name, msg.from.last_name].filter(Boolean).join(' ') || '未知用户';
           ctx.waitUntil(env.KV.put(`user_info_${userId}`, userName));
           
           const note = await env.KV.get(`note_${userId}`);
@@ -424,6 +472,8 @@ export default {
           // 未验证：智能多语言 Emoji 验证码
           // ==============================
           ctx.waitUntil(incStat('blocked'));
+          ctx.waitUntil(addBlockLog(userId, userName, '未验证拦截', msg.text || '[媒体消息]'));
+
           const customWelcome = await env.KV.get('welcome_msg') || (isZh ? '您好！为了防止垃圾信息，请完成简单验证：' : 'Hi! To prevent spam, please verify:');
           
           // 生成直观的 Emoji 计数算术题
