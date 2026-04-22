@@ -51,6 +51,8 @@ export default {
         { command: 'setwelcome', description: '💬 自定义欢迎语 (/setwelcome 内容)' },
         { command: 'setfaq1', description: '💬 设常见问题文案 (/setfaq1 内容)' },
         { command: 'setfaq2', description: '💬 设发货说明文案 (/setfaq2 内容)' },
+        { command: 'setcaptcha', description: '🔄 设验证模式 (/setcaptcha random/math/find/fruit)' },
+        { command: 'setmaxfails', description: '⛔ 设容错拉黑次数 (/setmaxfails 3)' },
         { command: 'broadcast', description: '📢 全局广播通知 (/broadcast 内容)' },
         { command: 'burn', description: '🔥 阅后即焚消息 (/burn 内容)' }
       ];
@@ -137,8 +139,32 @@ export default {
           });
         } else if (cb.data === 'captcha_fail') {
           ctx.waitUntil(incStat('blocked'));
-          ctx.waitUntil(addBlockLog(userId, userName, '验证码错误', '点击了错误的答案选项'));
-          await tgReq('answerCallbackQuery', { callback_query_id: cb.id, text: isZh ? '❌ 算错了哦，请重试' : '❌ Wrong answer, try again', show_alert: true });
+          let fails = parseInt(await env.KV.get(`fails_${userId}`) || '0') + 1;
+          await env.KV.put(`fails_${userId}`, fails.toString(), { expirationTtl: 86400 }); // 保存24小时
+          
+          let maxFails = parseInt(await env.KV.get('sys_maxfails') || '3'); // 默认3次错误拉黑
+          
+          if (fails >= maxFails) {
+            await env.KV.put(`banned_${userId}`, 'true'); // 触发拉黑
+            ctx.waitUntil(addBlockLog(userId, userName, '多次验证错误拉黑', `连续失败 ${fails} 次`));
+            await tgReq('editMessageText', { 
+               chat_id: userId, message_id: cb.message.message_id, 
+               text: isZh ? '🚫 **验证失败次数过多，您已被系统自动永久拦截。**' : '🚫 **Too many failed attempts. You are blocked.**', 
+               parse_mode: 'Markdown' 
+            });
+            
+            // 报警通知管理员
+            for (const admin of ADMIN_IDS) {
+               ctx.waitUntil(tgReq('sendMessage', { chat_id: admin, text: `🛡️ **防刷报警**\n\n访客 👤 **${userName}** (\`${userId}\`) 连续 ${fails} 次验证错误，已被自动拉黑。`, parse_mode: 'Markdown' }));
+            }
+          } else {
+            ctx.waitUntil(addBlockLog(userId, userName, '验证码错误', `第 ${fails} 次选错`));
+            await tgReq('answerCallbackQuery', { 
+               callback_query_id: cb.id, 
+               text: isZh ? `❌ 算错了哦，请重试！\n(警告: 错误 ${maxFails} 次将被永久拉黑，当前 ${fails} 次)` : '❌ Wrong answer, try again', 
+               show_alert: true 
+            });
+          }
         } 
         
         // --- 访客 FAQ 菜单交互 ---
@@ -344,6 +370,28 @@ export default {
               return new Response('OK');
             }
 
+            if (cmd === '/setcaptcha') {
+              const type = text.split(' ')[1];
+              if (['random', 'math', 'find', 'fruit'].includes(type)) {
+                await env.KV.put('sys_captcha_type', type);
+                await sendAdminPanel(userId, `✅ 验证模式已切换为：**${type}**\n\n- random (随机混用)\n- math (加减法)\n- find (找特定表情)\n- fruit (数水果)`);
+              } else {
+                await sendAdminPanel(userId, `⚠️ 格式错误，请使用: \`/setcaptcha random\``, null);
+              }
+              return new Response('OK');
+            }
+
+            if (cmd === '/setmaxfails') {
+              const num = parseInt(text.split(' ')[1]);
+              if (!isNaN(num) && num > 0) {
+                await env.KV.put('sys_maxfails', num.toString());
+                await sendAdminPanel(userId, `✅ 验证容错次数已设为：**${num}** 次\n(访客选错 ${num} 次将自动永久拉黑)`);
+              } else {
+                await sendAdminPanel(userId, `⚠️ 格式错误，请使用: \`/setmaxfails 3\``, null);
+              }
+              return new Response('OK');
+            }
+
             if (cmd === '/broadcast') {
               const bMsg = text.substring(11).trim();
               if (bMsg) {
@@ -503,28 +551,67 @@ export default {
 
           const customWelcome = await env.KV.get('welcome_msg') || (isZh ? '您好！为了防止垃圾信息，请完成简单验证：' : 'Hi! To prevent spam, please verify:');
           
-          const fruitList = ['🍎', '🍐', '🍊', '🍋', '🍌', '🍉', '🍇', '🍓'];
-          const emojiA = fruitList[Math.floor(Math.random() * fruitList.length)];
-          let emojiB = fruitList[Math.floor(Math.random() * fruitList.length)];
-          while (emojiA === emojiB) emojiB = fruitList[Math.floor(Math.random() * fruitList.length)];
+          const captchaTypeSetting = await env.KV.get('sys_captcha_type') || 'random';
+          const types = ['fruit', 'math', 'find'];
+          const cType = captchaTypeSetting === 'random' ? types[Math.floor(Math.random() * types.length)] : captchaTypeSetting;
 
-          const a = Math.floor(Math.random() * 5) + 1;
-          const b = Math.floor(Math.random() * 5) + 1;
-          const correctAns = a + b;
-          
-          let wrong1 = correctAns + Math.floor(Math.random() * 3) + 1;
-          let wrong2 = correctAns - Math.floor(Math.random() * 3) - 1;
-          if (wrong2 <= 0) wrong2 = correctAns + 4;
+          let qText = '';
+          let correctAns = '';
+          let wrong1 = '';
+          let wrong2 = '';
+
+          if (cType === 'math') {
+             // 1. 两位数加减法
+             const isAdd = Math.random() > 0.5;
+             const a = Math.floor(Math.random() * 20) + 1;
+             const b = Math.floor(Math.random() * 20) + 1;
+             if (isAdd) {
+                 correctAns = (a + b).toString();
+                 qText = `**${a} + ${b} = ?**`;
+             } else {
+                 const max = Math.max(a, b) + 5; // 防止结果出现0或负数
+                 const min = Math.min(a, b);
+                 correctAns = (max - min).toString();
+                 qText = `**${max} - ${min} = ?**`;
+             }
+             wrong1 = (parseInt(correctAns) + Math.floor(Math.random() * 5) + 1).toString();
+             wrong2 = (parseInt(correctAns) - Math.floor(Math.random() * 5) - 1).toString();
+          } else if (cType === 'find') {
+             // 2. 找指定表情
+             const emojis = ['🚗', '🍎', '🏠', '🐶', '💻', '⚽', '🎸', '⌚', '✈️', '🚲'];
+             const target = emojis[Math.floor(Math.random() * emojis.length)];
+             let others = emojis.filter(e => e !== target).sort(() => 0.5 - Math.random());
+             correctAns = target;
+             wrong1 = others[0];
+             wrong2 = others[1];
+             qText = `请在下方按钮中选出：**${target}**`;
+          } else {
+             // 3. 默认：数水果
+             const fruitList = ['🍎', '🍐', '🍊', '🍋', '🍌', '🍉', '🍇', '🍓'];
+             const emojiA = fruitList[Math.floor(Math.random() * fruitList.length)];
+             let emojiB = fruitList[Math.floor(Math.random() * fruitList.length)];
+             while (emojiA === emojiB) emojiB = fruitList[Math.floor(Math.random() * fruitList.length)];
+
+             const a = Math.floor(Math.random() * 5) + 1;
+             const b = Math.floor(Math.random() * 5) + 1;
+             correctAns = (a + b).toString();
+             
+             wrong1 = (parseInt(correctAns) + Math.floor(Math.random() * 3) + 1).toString();
+             wrong2 = (parseInt(correctAns) - Math.floor(Math.random() * 3) - 1).toString();
+             if (parseInt(wrong2) <= 0) wrong2 = (parseInt(correctAns) + 4).toString();
+             
+             qText = `**${emojiA.repeat(a)} + ${emojiB.repeat(b)} = ?**\n\n*(${isZh ? '💡 提示：请数一数水果的总数' : '💡 Hint: Count total fruits'})*`;
+          }
           
           const options = [
-            { text: `${correctAns}`, callback_data: 'captcha_pass' },
-            { text: `${wrong1}`, callback_data: 'captcha_fail' },
-            { text: `${wrong2}`, callback_data: 'captcha_fail' }
+            { text: correctAns, callback_data: 'captcha_pass' },
+            { text: wrong1, callback_data: 'captcha_fail' },
+            { text: wrong2, callback_data: 'captcha_fail' }
           ].sort(() => Math.random() - 0.5);
 
           await tgReq('sendMessage', {
             chat_id: userId,
-            text: `🤖 **${isZh ? '安全验证' : 'Anti-Spam Captcha'}**\n\n${customWelcome}\n\n**${emojiA.repeat(a)} + ${emojiB.repeat(b)} = ?**\n\n*(${isZh ? '💡 提示：请数一数水果的总数' : '💡 Hint: Count the total fruits'})*`,
+            text: `🤖 **${isZh ? '安全验证' : 'Anti-Spam Captcha'}**\n\n${customWelcome}\n\n${qText}`,
             parse_mode: 'Markdown',
             reply_to_message_id: msgId,
             reply_markup: { inline_keyboard: [options] }
