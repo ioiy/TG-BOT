@@ -49,6 +49,8 @@ export default {
         { command: 'unban', description: '✅ 解除拉黑用户 (/unban ID)' },
         { command: 'unverify', description: '🧹 清除验证状态 (/unverify ID)' },
         { command: 'setwelcome', description: '💬 自定义欢迎语 (/setwelcome 内容)' },
+        { command: 'setfaq1', description: '💬 设常见问题文案 (/setfaq1 内容)' },
+        { command: 'setfaq2', description: '💬 设发货说明文案 (/setfaq2 内容)' },
         { command: 'broadcast', description: '📢 全局广播通知 (/broadcast 内容)' },
         { command: 'burn', description: '🔥 阅后即焚消息 (/burn 内容)' }
       ];
@@ -145,15 +147,17 @@ export default {
           if (action === 'menu') {
             await tgReq('editMessageText', { chat_id: userId, message_id: cb.message.message_id, text: '👇 **自助服务菜单**\n请选择您需要了解的内容：', parse_mode: 'Markdown', reply_markup: faqKeyboard });
           } else if (action === '1') {
+            const faq1Text = await env.KV.get('faq_1_text') || '💰 **常见问题与价格**\n\n默认文案。管理员请发送 `/setfaq1 你的内容` 进行修改。';
             await tgReq('editMessageText', { 
               chat_id: userId, message_id: cb.message.message_id, 
-              text: '💰 **常见问题与价格**\n\n1. 我们的基础服务价格为 xxx 元。\n2. 支持微信、USDT 付款。\n*(注: 您可以自行在代码中修改此处文案)*', 
+              text: faq1Text, 
               parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🔙 返回菜单', callback_data: 'faq_menu' }]] } 
             });
           } else if (action === '2') {
+            const faq2Text = await env.KV.get('faq_2_text') || '📦 **发货与售后说明**\n\n默认文案。管理员请发送 `/setfaq2 你的内容` 进行修改。';
             await tgReq('editMessageText', { 
               chat_id: userId, message_id: cb.message.message_id, 
-              text: '📦 **发货与售后说明**\n\n1. 付款后通常在 10 分钟内自动发货。\n2. 如遇问题请点击呼叫人工。\n*(注: 您可以自行在代码中修改此处文案)*', 
+              text: faq2Text, 
               parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🔙 返回菜单', callback_data: 'faq_menu' }]] } 
             });
           } else if (action === 'human') {
@@ -325,6 +329,18 @@ export default {
             if (cmd === '/setwelcome') {
               const w = text.substring(12).trim();
               if (w) { await env.KV.put('welcome_msg', w); await sendAdminPanel(userId, `✅ 欢迎语已更新`); }
+              return new Response('OK');
+            }
+
+            if (cmd === '/setfaq1') {
+              const w = text.substring(9).trim();
+              if (w) { await env.KV.put('faq_1_text', w); await sendAdminPanel(userId, `✅ FAQ1 (常见问题) 内容已更新`); }
+              return new Response('OK');
+            }
+
+            if (cmd === '/setfaq2') {
+              const w = text.substring(9).trim();
+              if (w) { await env.KV.put('faq_2_text', w); await sendAdminPanel(userId, `✅ FAQ2 (售后说明) 内容已更新`); }
               return new Response('OK');
             }
 
