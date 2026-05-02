@@ -139,6 +139,12 @@ export default {
         // 黑名单拦截
         if (await env.KV.get(`banned_${userId}`)) return new Response('OK');
 
+        // --- 销毁面板交互 (提取到最外层，修复管理员无法点击的BUG) ---
+        if (cb.data === 'close_panel') {
+          await tgReq('deleteMessage', { chat_id: userId, message_id: cb.message.message_id });
+          return new Response('OK');
+        }
+
         // --- 访客验证码相关 ---
         if (cb.data === 'captcha_pass') {
           await env.KV.put(`user_${userId}`, 'verified', TTL);
@@ -221,8 +227,29 @@ export default {
             await tgReq('editMessageText', {
               chat_id: userId, message_id: cb.message.message_id,
               text: `✅ **已锁定对话**\n\n正在与 👤 **${note ? `${note} (${targetName})` : targetName}** (\`${targetId}\`) 聊天。\n\n退出发 \`/end\`，剧透阅后即焚发 \`/burn 内容\``,
-              parse_mode: 'Markdown'
+              parse_mode: 'Markdown',
+              reply_markup: {
+                inline_keyboard: [
+                  [
+                    { text: '📝 备注', callback_data: `qnote_${targetId}` },
+                    { text: '🚫 拉黑', callback_data: `qban_${targetId}` },
+                    { text: '🗑️ 删除', callback_data: `qdel_${targetId}` }
+                  ],
+                  [{ text: '❌ 关闭面板', callback_data: 'close_panel' }]
+                ]
+              }
             });
+          } else if (cb.data.startsWith('qdel_')) {
+            const targetId = cb.data.replace('qdel_', '');
+            await env.KV.delete(`user_info_${targetId}`);
+            await env.KV.delete(`history_${targetId}`);
+            await env.KV.delete(`note_${targetId}`);
+            // 如果删除的正是当前锁定的聊天，则自动退出锁定
+            if (await env.KV.get(`active_chat_${userId}`) === targetId) {
+                await env.KV.delete(`active_chat_${userId}`);
+            }
+            await tgReq('answerCallbackQuery', { callback_query_id: cb.id, text: '🗑️ 成功：已将该访客从联系人列表中移除', show_alert: true });
+            await tgReq('deleteMessage', { chat_id: userId, message_id: cb.message.message_id });
           } else if (cb.data.startsWith('qban_')) {
             const targetId = cb.data.replace('qban_', '');
             await env.KV.put(`banned_${targetId}`, 'true');
@@ -241,10 +268,6 @@ export default {
           }
         }
         
-        // --- 销毁面板交互 ---
-        else if (cb.data === 'close_panel') {
-          await tgReq('deleteMessage', { chat_id: userId, message_id: cb.message.message_id });
-        }
         return new Response('OK');
       }
 
