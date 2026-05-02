@@ -48,11 +48,16 @@ export default {
         { command: 'ban', description: '🚫 永久拉黑用户 (/ban ID)' },
         { command: 'unban', description: '✅ 解除拉黑用户 (/unban ID)' },
         { command: 'unverify', description: '🧹 清除验证状态 (/unverify ID)' },
+        { command: 'deluser', description: '🗑️ 从列表移除联系人 (/deluser ID)' },
+        { command: 'clearlist', description: '🧹 清空所有联系人记录' },
         { command: 'setwelcome', description: '💬 自定义欢迎语 (/setwelcome 内容)' },
         { command: 'setfaq1', description: '💬 设常见问题文案 (/setfaq1 内容)' },
         { command: 'setfaq2', description: '💬 设发货说明文案 (/setfaq2 内容)' },
         { command: 'setcaptcha', description: '🔄 设验证模式 (/setcaptcha random/math/find/fruit)' },
         { command: 'setmaxfails', description: '⛔ 设容错拉黑次数 (/setmaxfails 3)' },
+        { command: 'addspam', description: '⛔ 添加违禁词拉黑 (/addspam 词)' },
+        { command: 'delspam', description: '❎ 删除违禁词 (/delspam 词)' },
+        { command: 'spamlist', description: '📋 查看违禁词表' },
         { command: 'broadcast', description: '📢 全局广播通知 (/broadcast 内容)' },
         { command: 'burn', description: '🔥 阅后即焚消息 (/burn 内容)' }
       ];
@@ -92,7 +97,17 @@ export default {
       const lastId = await env.KV.get(`last_panel_${chatId}`);
       if (lastId) ctx.waitUntil(tgReq('deleteMessage', { chat_id: chatId, message_id: lastId }));
       const payload = { chat_id: chatId, text, parse_mode: 'Markdown' };
-      if (markup) payload.reply_markup = markup;
+      
+      // 自动给所有面板加上“关闭”按钮
+      const closeBtn = [{ text: '❌ 关闭面板', callback_data: 'close_panel' }];
+      if (markup) {
+         if (markup.inline_keyboard) markup.inline_keyboard.push(closeBtn);
+         else markup.inline_keyboard = [closeBtn];
+         payload.reply_markup = markup;
+      } else {
+         payload.reply_markup = { inline_keyboard: [closeBtn] };
+      }
+      
       const res = await tgReq('sendMessage', payload);
       if (res.ok) ctx.waitUntil(env.KV.put(`last_panel_${chatId}`, res.result.message_id.toString(), { expirationTtl: 86400 }));
     };
@@ -225,6 +240,11 @@ export default {
             await sendAdminPanel(userId, '📊 统计数据已被手动清空。');
           }
         }
+        
+        // --- 销毁面板交互 ---
+        else if (cb.data === 'close_panel') {
+          await tgReq('deleteMessage', { chat_id: userId, message_id: cb.message.message_id });
+        }
         return new Response('OK');
       }
 
@@ -254,8 +274,10 @@ export default {
             if (cmd === '/chat' || cmd === '/list') {
               const listRes = await env.KV.list({ prefix: 'user_info_' });
               const keyboard = [];
-              for (const k of listRes.keys.slice(0, 20)) {
+              for (const k of listRes.keys) {
+                if (keyboard.length >= 20) break; // 最多显示20人
                 const uid = k.name.replace('user_info_', '');
+                if (await env.KV.get(`banned_${uid}`)) continue; // 🌟 自动过滤掉已拉黑的用户
                 const uname = await env.KV.get(k.name) || '未知';
                 const note = await env.KV.get(`note_${uid}`);
                 keyboard.push([{ text: note ? `📝 ${note}` : `👤 ${uname}`, callback_data: `setchat_${uid}` }]);
@@ -342,6 +364,25 @@ export default {
               return new Response('OK');
             }
 
+            if (cmd === '/addspam' || cmd === '/delspam' || cmd === '/spamlist') {
+              let spamList = JSON.parse(await env.KV.get('spam_keywords') || '[]');
+              if (cmd === '/addspam' && text.split(' ').length >= 2) {
+                const word = text.split(' ').slice(1).join(' ');
+                if (!spamList.includes(word)) spamList.push(word);
+                await env.KV.put('spam_keywords', JSON.stringify(spamList));
+                await sendAdminPanel(userId, `⛔ 添加违禁词成功！包含 "**${word}**" 的消息将自动被拦截并永久拉黑发送者。`);
+              } else if (cmd === '/delspam' && text.split(' ').length >= 2) {
+                const word = text.split(' ').slice(1).join(' ');
+                spamList = spamList.filter(w => w !== word);
+                await env.KV.put('spam_keywords', JSON.stringify(spamList));
+                await sendAdminPanel(userId, `❎ 已删除违禁词 "**${word}**"。`);
+              } else if (cmd === '/spamlist') {
+                const reply = spamList.length ? spamList.map(w => `- ${w}`).join('\n') : '无';
+                await sendAdminPanel(userId, `📋 **当前违禁词列表:**\n${reply}`);
+              }
+              return new Response('OK');
+            }
+
             if (cmd === '/ban' || cmd === '/unban' || cmd === '/unverify') {
               const tid = text.split(' ')[1];
               if (tid) {
@@ -349,6 +390,28 @@ export default {
                 if (cmd === '/unban') { await env.KV.delete(`banned_${tid}`); await sendAdminPanel(userId, `✅ 已解除拉黑 ${tid}`); }
                 if (cmd === '/unverify') { await env.KV.delete(`user_${tid}`); await sendAdminPanel(userId, `🧹 已清除 ${tid} 的验证状态`); }
               }
+              return new Response('OK');
+            }
+
+            if (cmd === '/deluser') {
+              const tid = text.split(' ')[1];
+              if (tid) {
+                await env.KV.delete(`user_info_${tid}`);
+                await env.KV.delete(`history_${tid}`);
+                await env.KV.delete(`note_${tid}`);
+                await sendAdminPanel(userId, `🗑️ 已将用户 \`${tid}\` 的记录从联系人面板中抹除。`);
+              }
+              return new Response('OK');
+            }
+
+            if (cmd === '/clearlist') {
+              const listRes = await env.KV.list({ prefix: 'user_info_' });
+              let count = 0;
+              for (const k of listRes.keys) {
+                 ctx.waitUntil(env.KV.delete(k.name));
+                 count++;
+              }
+              await sendAdminPanel(userId, `🧹 联系人列表已清空 (共清除 ${count} 条记录)。`);
               return new Response('OK');
             }
 
@@ -500,6 +563,30 @@ export default {
           const display = note ? `${note} (原名: ${userName})` : userName;
 
           if (msg.text) {
+             // 🛡️ 敏感词检测系统 (最高优先级)
+             let spamList = JSON.parse(await env.KV.get('spam_keywords') || '[]');
+             let isSpam = false;
+             for (const word of spamList) {
+               if (msg.text.includes(word)) { isSpam = true; break; }
+             }
+             
+             if (isSpam) {
+                await env.KV.put(`banned_${userId}`, 'true'); // 触发自动拉黑
+                ctx.waitUntil(incStat('blocked'));
+                ctx.waitUntil(addBlockLog(userId, userName, '违禁词封禁', msg.text));
+                
+                // 给管理员发报警
+                for (const admin of ADMIN_IDS) {
+                   ctx.waitUntil(tgReq('sendMessage', { 
+                     chat_id: admin, 
+                     text: `🛡️ **违禁词拦截报警**\n\n已自动拦截并拉黑发送广告的访客 👤 **${display}** (\`${userId}\`)。\n\n**被拦截的广告内容:**\n${msg.text}`, 
+                     parse_mode: 'Markdown' 
+                   }));
+                }
+                return new Response('OK'); // 直接丢弃该消息
+             }
+
+             // 正常记录历史文本
              let historyStr = await env.KV.get(`history_${userId}`) || '[]';
              let history = JSON.parse(historyStr);
              history.push(msg.text.substring(0, 100));
