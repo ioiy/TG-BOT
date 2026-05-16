@@ -9,6 +9,7 @@ export default {
 
     const ADMIN_IDS = ADMIN_ID_ENV.split(',').map(id => id.trim());
     const apiUrl = `https://api.telegram.org/bot${BOT_TOKEN}`;
+    const WEBHOOK_SECRET = BOT_TOKEN.replace(/[^a-zA-Z0-9]/g, '').substring(0, 32); // 🛡️ 核心防卫: 自动生成 Webhook 专属暗号
 
     const tgReq = async (method, payload) => {
       const res = await fetch(`${apiUrl}/${method}`, {
@@ -26,7 +27,7 @@ export default {
     // ==========================================
     if (request.method === 'GET' && url.pathname === '/init') {
       const webhookUrl = `https://${url.hostname}/webhook`;
-      const res = await tgReq('setWebhook', { url: webhookUrl });
+      const res = await tgReq('setWebhook', { url: webhookUrl, secret_token: WEBHOOK_SECRET });
 
       await tgReq('setMyCommands', {
         commands: [{ command: 'start', description: '开始使用 / 呼出服务菜单' }],
@@ -58,6 +59,7 @@ export default {
         { command: 'addspam', description: '⛔ 添加违禁词拉黑 (/addspam 词)' },
         { command: 'delspam', description: '❎ 删除违禁词 (/delspam 词)' },
         { command: 'spamlist', description: '📋 查看违禁词表' },
+        { command: 'spamalert', description: '🔕 开关: 违禁词报警通知' },
         { command: 'broadcast', description: '📢 全局广播通知 (/broadcast 内容)' },
         { command: 'burn', description: '🔥 阅后即焚消息 (/burn 内容)' }
       ];
@@ -122,6 +124,11 @@ export default {
     };
 
     if (request.method === 'POST' && url.pathname === '/webhook') {
+      // 🛡️ Webhook 安全鉴权: 核对暗号，拒绝一切外部直接访问伪造
+      if (request.headers.get('X-Telegram-Bot-Api-Secret-Token') !== WEBHOOK_SECRET) {
+         return new Response('Unauthorized', { status: 401 });
+      }
+
       let update;
       try { update = await request.json(); } catch (e) { return new Response('Bad Request'); }
 
@@ -265,6 +272,26 @@ export default {
             await env.KV.delete('stat_msgs');
             await tgReq('answerCallbackQuery', { callback_query_id: cb.id, text: '🧹 所有统计数据已清零！', show_alert: true });
             await sendAdminPanel(userId, '📊 统计数据已被手动清空。');
+          } else if (cb.data === 'bc_confirm') {
+            // 📢 广播发送确认执行
+            const bcMsgId = await env.KV.get(`pending_bc_${userId}`);
+            if (!bcMsgId) return new Response('OK');
+            await tgReq('editMessageText', { chat_id: userId, message_id: cb.message.message_id, text: '⏳ 正在拼命群发中，请稍候...' });
+            let count = 0;
+            for (const k of (await env.KV.list({ prefix: 'user_' })).keys) {
+              if (!k.name.startsWith('user_info_')) {
+                ctx.waitUntil(tgReq('copyMessage', { chat_id: k.name.replace('user_', ''), from_chat_id: userId, message_id: bcMsgId }));
+                count++;
+              }
+            }
+            await env.KV.delete(`pending_bc_${userId}`);
+            await tgReq('deleteMessage', { chat_id: userId, message_id: cb.message.message_id });
+            await sendAdminPanel(userId, `✅ **广播完成**\n\n已成功将该消息投递给 ${count} 位联系人。`);
+          } else if (cb.data === 'bc_cancel') {
+            // 📢 取消广播
+            await env.KV.delete(`pending_bc_${userId}`);
+            await tgReq('deleteMessage', { chat_id: userId, message_id: cb.message.message_id });
+            await sendAdminPanel(userId, '❌ 广播任务已取消。');
           }
         }
         
@@ -274,7 +301,16 @@ export default {
       // ==========================================
       // 2. 处理普通消息
       // ==========================================
-      if (update.message && update.message.chat.type === 'private') {
+      if (update.message) {
+        if (update.message.chat.type !== 'private') {
+           // 🛡️ 自动退群隔离保护
+           await tgReq('leaveChat', { chat_id: update.message.chat.id });
+           for (const admin of ADMIN_IDS) {
+               ctx.waitUntil(tgReq('sendMessage', { chat_id: admin, text: `🛡️ **群组隔离保护**\n\n检测到非私聊环境，已自动退出群组: ${update.message.chat.title || '未知群'} (${update.message.chat.id})` }));
+           }
+           return new Response('OK');
+        }
+
         const msg = update.message;
         const userId = msg.from.id.toString();
         const msgId = msg.message_id;
@@ -285,8 +321,8 @@ export default {
         // 【管理员控制台逻辑】
         // ----------------------------------------
         if (isAdmin) {
-          if (msg.text) {
-            const text = msg.text.trim();
+          const text = (msg.text || msg.caption || '').trim();
+          if (text) {
             const cmd = text.split(' ')[0];
 
             // 自动清理管理员的命令消息，保持聊天框整洁
@@ -406,6 +442,13 @@ export default {
               return new Response('OK');
             }
 
+            if (cmd === '/spamalert') {
+              const nextState = await env.KV.get('sys_spamalert') === 'off' ? 'on' : 'off';
+              await env.KV.put('sys_spamalert', nextState);
+              await sendAdminPanel(userId, `🔕 违禁词拦截报警已 **${nextState === 'on' ? '开启' : '关闭 (静默模式)'}**。\n\n关闭后，系统拉黑广告狗将不再发消息打扰你，只会悄悄记录到 \`/blocklog\` 中。`);
+              return new Response('OK');
+            }
+
             if (cmd === '/ban' || cmd === '/unban' || cmd === '/unverify') {
               const tid = text.split(' ')[1];
               if (tid) {
@@ -479,17 +522,11 @@ export default {
             }
 
             if (cmd === '/broadcast') {
-              const bMsg = text.substring(11).trim();
-              if (bMsg) {
-                let count = 0;
-                for (const k of (await env.KV.list({ prefix: 'user_' })).keys) {
-                  if (!k.name.startsWith('user_info_')) {
-                    ctx.waitUntil(tgReq('sendMessage', { chat_id: k.name.replace('user_', ''), text: `📢 **全局通知**\n\n${bMsg}`, parse_mode: 'Markdown' }));
-                    count++;
-                  }
-                }
-                await sendAdminPanel(userId, `✅ 广播任务已提交，预计发送给 ${count} 人。`);
-              }
+              // 📢 广播升级：保存当前消息ID，发给面板确认 (支持图片/视频/文件附带文字)
+              await env.KV.put(`pending_bc_${userId}`, msgId.toString(), { expirationTtl: 600 });
+              await sendAdminPanel(userId, `📢 **广播发送确认**\n\n将把你的这条消息原封不动（支持带图/视频）群发给所有人。\n是否确认发送？`, {
+                 inline_keyboard: [[{ text: '✅ 确认发送', callback_data: 'bc_confirm' }, { text: '❌ 取消', callback_data: 'bc_cancel' }]]
+              });
               return new Response('OK');
             }
 
@@ -527,7 +564,7 @@ export default {
           const activeChat = await env.KV.get(`active_chat_${userId}`);
           if (activeChat) {
             await tgReq('copyMessage', { chat_id: activeChat, from_chat_id: userId, message_id: msgId });
-          } else if (!msg.text?.startsWith('/')) {
+          } else if (!text.startsWith('/')) {
             await tgReq('sendMessage', { chat_id: userId, text: 'ℹ️ **操作提示**\n当前未锁定聊天对象。请发送 `/chat`，或左滑回复用户消息。', parse_mode: 'Markdown' });
           }
           return new Response('OK');
@@ -581,16 +618,37 @@ export default {
         }
 
         if (isVerified === 'verified') {
+          // 🛡️ 刷屏限流防卫 (10分钟冷冻)
+          if (await env.KV.get(`flood_banned_${userId}`)) return new Response('OK');
+
           ctx.waitUntil(env.KV.put(`user_info_${userId}`, userName, TTL)); // 刷新活跃度
           const note = await env.KV.get(`note_${userId}`);
           const display = note ? `${note} (原名: ${userName})` : userName;
+
+          // 记录频率 (5秒内>5条拉黑)
+          let rateStr = await env.KV.get(`rate_${userId}`) || '[]';
+          let rateArr = JSON.parse(rateStr);
+          const now = Date.now();
+          rateArr.push(now);
+          rateArr = rateArr.filter(ts => now - ts < 5000);
+          if (rateArr.length > 5) {
+             await env.KV.put(`flood_banned_${userId}`, 'true', { expirationTtl: 600 });
+             await env.KV.delete(`rate_${userId}`);
+             await tgReq('sendMessage', { chat_id: userId, text: '⚠️ 发送过于频繁，为防止刷屏，您已被系统暂时禁言 10 分钟。' });
+             for (const admin of ADMIN_IDS) {
+                 ctx.waitUntil(tgReq('sendMessage', { chat_id: admin, text: `🚨 **刷屏限流报警**\n\n访客 👤 **${display}** (\`${userId}\`) 发送频率过高 (5秒内>5条)，已被系统自动冻结禁言 10 分钟。`, parse_mode: 'Markdown' }));
+             }
+             return new Response('OK');
+          }
+          ctx.waitUntil(env.KV.put(`rate_${userId}`, JSON.stringify(rateArr), { expirationTtl: 60 }));
 
           if (msg.text) {
              // 🛡️ 敏感词检测系统 (最高优先级)
              let spamList = JSON.parse(await env.KV.get('spam_keywords') || '[]');
              let isSpam = false;
+             let matchedWord = "";
              for (const word of spamList) {
-               if (msg.text.includes(word)) { isSpam = true; break; }
+               if (msg.text.includes(word)) { isSpam = true; matchedWord = word; break; }
              }
              
              if (isSpam) {
@@ -598,13 +656,16 @@ export default {
                 ctx.waitUntil(incStat('blocked'));
                 ctx.waitUntil(addBlockLog(userId, userName, '违禁词封禁', msg.text));
                 
-                // 给管理员发报警
-                for (const admin of ADMIN_IDS) {
-                   ctx.waitUntil(tgReq('sendMessage', { 
-                     chat_id: admin, 
-                     text: `🛡️ **违禁词拦截报警**\n\n已自动拦截并拉黑发送广告的访客 👤 **${display}** (\`${userId}\`)。\n\n**被拦截的广告内容:**\n${msg.text}`, 
-                     parse_mode: 'Markdown' 
-                   }));
+                // 给管理员发报警 (受开关控制，且隐藏广告原文)
+                const alertOn = await env.KV.get('sys_spamalert') !== 'off'; // 默认开启
+                if (alertOn) {
+                    for (const admin of ADMIN_IDS) {
+                       ctx.waitUntil(tgReq('sendMessage', { 
+                         chat_id: admin, 
+                         text: `🛡️ **静默拦截通知**\n\n已自动拉黑发广告的访客 👤 **${display}** (\`${userId}\`)。\n\n🎯 **触发违禁词:** \`${matchedWord}\`\n\n*(广告原文本已折叠，如需查看请发送 /blocklog。若不想再收到此通知，可发送 /spamalert 关闭)*`, 
+                         parse_mode: 'Markdown' 
+                       }));
+                    }
                 }
                 return new Response('OK'); // 直接丢弃该消息
              }
