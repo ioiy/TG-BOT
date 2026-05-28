@@ -59,7 +59,7 @@ export default {
         { command: 'addspam', description: '⛔ 添加违禁词拉黑 (/addspam 词)' },
         { command: 'delspam', description: '❎ 删除违禁词 (/delspam 词)' },
         { command: 'spamlist', description: '📋 查看违禁词表' },
-        { command: 'spamalert', description: '🔕 开关: 违禁词报警通知' },
+        { command: 'spamalert', description: '🔕 开关: 自动拉黑报警(静默模式)' }, // 更新了描述
         { command: 'broadcast', description: '📢 全局广播通知 (/broadcast 内容)' },
         { command: 'burn', description: '🔥 阅后即焚消息 (/burn 内容)' }
       ];
@@ -181,9 +181,12 @@ export default {
                parse_mode: 'Markdown' 
             });
             
-            // 报警通知管理员
-            for (const admin of ADMIN_IDS) {
-               ctx.waitUntil(tgReq('sendMessage', { chat_id: admin, text: `🛡️ **防刷报警**\n\n访客 👤 **${userName}** (\`${userId}\`) 连续 ${fails} 次验证错误，已被自动拉黑。`, parse_mode: 'Markdown' }));
+            // 报警通知管理员 (受静默模式开关控制)
+            const alertOn = await env.KV.get('sys_spamalert') !== 'off'; // 默认开启
+            if (alertOn) {
+                for (const admin of ADMIN_IDS) {
+                   ctx.waitUntil(tgReq('sendMessage', { chat_id: admin, text: `🛡️ **防刷报警**\n\n访客 👤 **${userName}** (\`${userId}\`) 连续 ${fails} 次验证错误，已被自动拉黑。`, parse_mode: 'Markdown' }));
+                }
             }
           } else {
             ctx.waitUntil(addBlockLog(userId, userName, '验证码错误', `第 ${fails} 次选错`));
@@ -445,7 +448,7 @@ export default {
             if (cmd === '/spamalert') {
               const nextState = await env.KV.get('sys_spamalert') === 'off' ? 'on' : 'off';
               await env.KV.put('sys_spamalert', nextState);
-              await sendAdminPanel(userId, `🔕 违禁词拦截报警已 **${nextState === 'on' ? '开启' : '关闭 (静默模式)'}**。\n\n关闭后，系统拉黑广告狗将不再发消息打扰你，只会悄悄记录到 \`/blocklog\` 中。`);
+              await sendAdminPanel(userId, `🔕 自动拉黑报警已 **${nextState === 'on' ? '开启' : '关闭 (静默模式)'}**。\n\n关闭后，系统自动拉黑（违禁词/验证码多次错误）将不再发消息打扰你，只会悄悄记录到 \`/blocklog\` 中。`);
               return new Response('OK');
             }
 
