@@ -645,19 +645,22 @@ export default {
           }
           ctx.waitUntil(env.KV.put(`rate_${userId}`, JSON.stringify(rateArr), { expirationTtl: 60 }));
 
-          if (msg.text) {
-             // 🛡️ 敏感词检测系统 (最高优先级)
+          // 🌟 修复漏洞：同时提取纯文本和媒体的附带说明文字 (Caption) 进行屏蔽词检测
+          const messageContent = (msg.text || msg.caption || "").toLowerCase();
+
+          if (messageContent) {
+             // 🛡️ 敏感词检测系统 (最高优先级，无视大小写)
              let spamList = JSON.parse(await env.KV.get('spam_keywords') || '[]');
              let isSpam = false;
              let matchedWord = "";
              for (const word of spamList) {
-               if (msg.text.includes(word)) { isSpam = true; matchedWord = word; break; }
+               if (messageContent.includes(word.toLowerCase())) { isSpam = true; matchedWord = word; break; }
              }
              
              if (isSpam) {
                 await env.KV.put(`banned_${userId}`, 'true'); // 触发自动拉黑
                 ctx.waitUntil(incStat('blocked'));
-                ctx.waitUntil(addBlockLog(userId, userName, '违禁词封禁', msg.text));
+                ctx.waitUntil(addBlockLog(userId, userName, '违禁词封禁', messageContent));
                 
                 // 给管理员发报警 (受开关控制，且隐藏广告原文)
                 const alertOn = await env.KV.get('sys_spamalert') !== 'off'; // 默认开启
@@ -673,19 +676,21 @@ export default {
                 return new Response('OK'); // 直接丢弃该消息
              }
 
-             // 正常记录历史文本
-             let historyStr = await env.KV.get(`history_${userId}`) || '[]';
-             let history = JSON.parse(historyStr);
-             history.push(msg.text.substring(0, 100));
-             if (history.length > 5) history.shift();
-             ctx.waitUntil(env.KV.put(`history_${userId}`, JSON.stringify(history), TTL));
+             // 正常记录历史文本 (仅记录文本)
+             if (msg.text) {
+               let historyStr = await env.KV.get(`history_${userId}`) || '[]';
+               let history = JSON.parse(historyStr);
+               history.push(msg.text.substring(0, 100));
+               if (history.length > 5) history.shift();
+               ctx.waitUntil(env.KV.put(`history_${userId}`, JSON.stringify(history), TTL));
 
-             let kwMap = JSON.parse(await env.KV.get('auto_keywords') || '{}');
-             for (const kw in kwMap) {
-                if (msg.text.includes(kw)) {
-                  ctx.waitUntil(tgReq('sendMessage', { chat_id: userId, text: kwMap[kw], reply_to_message_id: msgId }));
-                  break;
-                }
+               let kwMap = JSON.parse(await env.KV.get('auto_keywords') || '{}');
+               for (const kw in kwMap) {
+                  if (msg.text.includes(kw)) {
+                    ctx.waitUntil(tgReq('sendMessage', { chat_id: userId, text: kwMap[kw], reply_to_message_id: msgId }));
+                    break;
+                  }
+               }
              }
           }
 
