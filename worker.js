@@ -645,11 +645,35 @@ export default {
           }
           ctx.waitUntil(env.KV.put(`rate_${userId}`, JSON.stringify(rateArr), { expirationTtl: 60 }));
 
-          // 🌟 修复漏洞：同时提取纯文本和媒体的附带说明文字 (Caption) 进行屏蔽词检测
-          const messageContent = (msg.text || msg.caption || "").toLowerCase();
+          // 🌟 终极敏感词检测系统 (全方位深度扫描)
+          // 提取所有可能包含广告的文本：纯文本、图片配文、转发来源名称、透明按钮文字、按钮链接
+          let messageContent = (msg.text || msg.caption || "").toLowerCase();
+          
+          // 1. 扫描转发来源 (提取频道名、作者名)
+          if (msg.forward_from_chat && msg.forward_from_chat.title) {
+             messageContent += " " + msg.forward_from_chat.title.toLowerCase();
+          }
+          if (msg.forward_from_chat && msg.forward_from_chat.username) {
+             messageContent += " " + msg.forward_from_chat.username.toLowerCase();
+          }
+          if (msg.forward_from && msg.forward_from.first_name) {
+             messageContent += " " + msg.forward_from.first_name.toLowerCase();
+          }
+          if (msg.forward_sender_name) {
+             messageContent += " " + msg.forward_sender_name.toLowerCase();
+          }
+
+          // 2. 扫描附带的内联透明按钮 (提取按钮文字和链接)
+          if (msg.reply_markup && msg.reply_markup.inline_keyboard) {
+             for (const row of msg.reply_markup.inline_keyboard) {
+                for (const btn of row) {
+                   if (btn.text) messageContent += " " + btn.text.toLowerCase();
+                   if (btn.url) messageContent += " " + btn.url.toLowerCase();
+                }
+             }
+          }
 
           if (messageContent) {
-             // 🛡️ 敏感词检测系统 (最高优先级，无视大小写)
              let spamList = JSON.parse(await env.KV.get('spam_keywords') || '[]');
              let isSpam = false;
              let matchedWord = "";
@@ -660,7 +684,7 @@ export default {
              if (isSpam) {
                 await env.KV.put(`banned_${userId}`, 'true'); // 触发自动拉黑
                 ctx.waitUntil(incStat('blocked'));
-                ctx.waitUntil(addBlockLog(userId, userName, '违禁词封禁', messageContent));
+                ctx.waitUntil(addBlockLog(userId, userName, '违禁词封禁(深度扫描)', messageContent));
                 
                 // 给管理员发报警 (受开关控制，且隐藏广告原文)
                 const alertOn = await env.KV.get('sys_spamalert') !== 'off'; // 默认开启
@@ -668,7 +692,7 @@ export default {
                     for (const admin of ADMIN_IDS) {
                        ctx.waitUntil(tgReq('sendMessage', { 
                          chat_id: admin, 
-                         text: `🛡️ **静默拦截通知**\n\n已自动拉黑发广告的访客 👤 **${display}** (\`${userId}\`)。\n\n🎯 **触发违禁词:** \`${matchedWord}\`\n\n*(广告原文本已折叠，如需查看请发送 /blocklog。若不想再收到此通知，可发送 /spamalert 关闭)*`, 
+                         text: `🛡️ **静默拦截通知 (深度扫描)**\n\n已自动拉黑发广告的访客 👤 **${display}** (\`${userId}\`)。\n\n🎯 **触发违禁词:** \`${matchedWord}\`\n\n*(此为高级广告拦截，可能包含隐蔽的转发或按钮广告。广告原文本已折叠，详见 /blocklog)*`, 
                          parse_mode: 'Markdown' 
                        }));
                     }
@@ -676,21 +700,20 @@ export default {
                 return new Response('OK'); // 直接丢弃该消息
              }
 
-             // 正常记录历史文本 (仅记录文本)
-             if (msg.text) {
-               let historyStr = await env.KV.get(`history_${userId}`) || '[]';
-               let history = JSON.parse(historyStr);
-               history.push(msg.text.substring(0, 100));
-               if (history.length > 5) history.shift();
-               ctx.waitUntil(env.KV.put(`history_${userId}`, JSON.stringify(history), TTL));
+             // 正常记录历史文本 (过滤掉为了防垃圾拼接的辅助文字)
+             const displayHistoryText = msg.text || msg.caption || '[多媒体/转发消息]';
+             let historyStr = await env.KV.get(`history_${userId}`) || '[]';
+             let history = JSON.parse(historyStr);
+             history.push(displayHistoryText.substring(0, 100));
+             if (history.length > 5) history.shift();
+             ctx.waitUntil(env.KV.put(`history_${userId}`, JSON.stringify(history), TTL));
 
-               let kwMap = JSON.parse(await env.KV.get('auto_keywords') || '{}');
-               for (const kw in kwMap) {
-                  if (msg.text.includes(kw)) {
-                    ctx.waitUntil(tgReq('sendMessage', { chat_id: userId, text: kwMap[kw], reply_to_message_id: msgId }));
-                    break;
-                  }
-               }
+             let kwMap = JSON.parse(await env.KV.get('auto_keywords') || '{}');
+             for (const kw in kwMap) {
+                if (displayHistoryText.includes(kw)) {
+                  ctx.waitUntil(tgReq('sendMessage', { chat_id: userId, text: kwMap[kw], reply_to_message_id: msgId }));
+                  break;
+                }
              }
           }
 
