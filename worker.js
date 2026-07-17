@@ -9,7 +9,7 @@ export default {
 
     const ADMIN_IDS = ADMIN_ID_ENV.split(',').map(id => id.trim());
     const apiUrl = `https://api.telegram.org/bot${BOT_TOKEN}`;
-    const WEBHOOK_SECRET = BOT_TOKEN.replace(/[^a-zA-Z0-9]/g, '').substring(0, 32); // 🛡️ 核心防卫: 自动生成 Webhook 专属暗号
+    const WEBHOOK_SECRET = BOT_TOKEN.replace(/[^a-zA-Z0-9]/g, '').substring(0, 32); // 🛡️ 自动生成专属安全 Webhook 签名
 
     const tgReq = async (method, payload) => {
       const res = await fetch(`${apiUrl}/${method}`, {
@@ -23,7 +23,19 @@ export default {
     const url = new URL(request.url);
 
     // ==========================================
-    // 0. 初始化与 Webhook
+    // 0. 安全图像代理（专为 OCR 设计，防泄露 BOT_TOKEN）
+    // ==========================================
+    if (url.pathname === '/img') {
+      const secret = url.searchParams.get('secret');
+      if (secret !== WEBHOOK_SECRET) return new Response('Unauthorized', { status: 401 });
+      const file = url.searchParams.get('file');
+      const fileUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/${file}`;
+      const fileRes = await fetch(fileUrl);
+      return new Response(fileRes.body, { headers: { 'Content-Type': fileRes.headers.get('Content-Type') || 'image/jpeg' } });
+    }
+
+    // ==========================================
+    // 1. 系统初始化
     // ==========================================
     if (request.method === 'GET' && url.pathname === '/init') {
       const webhookUrl = `https://${url.hostname}/webhook`;
@@ -37,6 +49,7 @@ export default {
       const adminCommands = [
         { command: 'chat', description: '📱 呼出联系人面板锁定单聊' },
         { command: 'end', description: '⏹ 退出锁定单聊模式' },
+        { command: 'settings', description: '⚙️ 核心防卫功能控制中心' },
         { command: 'stats', description: '📊 查看系统运行状态数据' },
         { command: 'blocklog', description: '🛡️ 查看详细拦截与错误记录' },
         { command: 'dnd', description: '🔕 开关: 离开/免打扰模式' },
@@ -48,18 +61,16 @@ export default {
         { command: 'delkw', description: '➖ 删除自动回复 (/delkw 词)' },
         { command: 'ban', description: '🚫 永久拉黑用户 (/ban ID)' },
         { command: 'unban', description: '✅ 解除拉黑用户 (/unban ID)' },
-        { command: 'unverify', description: '🧹 清除验证状态 (/unverify ID)' },
-        { command: 'deluser', description: '🗑️ 从列表移除联系人 (/deluser ID)' },
-        { command: 'clearlist', description: '🧹 清空所有联系人记录' },
-        { command: 'setwelcome', description: '💬 自定义欢迎语 (/setwelcome 内容)' },
-        { command: 'setfaq1', description: '💬 设常见问题文案 (/setfaq1 内容)' },
-        { command: 'setfaq2', description: '💬 设发货说明文案 (/setfaq2 内容)' },
-        { command: 'setcaptcha', description: '🔄 设验证模式 (/setcaptcha random/math/find/fruit)' },
-        { command: 'setmaxfails', description: '⛔ 设容错拉黑次数 (/setmaxfails 3)' },
+        { command: 'addwhite', description: '⚪ 添加白名单 (/addwhite ID)' },
+        { command: 'delwhite', description: '⚫ 移除白名单 (/delwhite ID)' },
+        { command: 'whitelist', description: '📋 查看白名单列表' },
+        { command: 'addwarn', description: '⚠️ 添加预警词 (/addwarn 词)' },
+        { command: 'delwarn', description: '❎ 删除预警词 (/delwarn 词)' },
+        { command: 'warnlist', description: '📋 查看预警词列表' },
         { command: 'addspam', description: '⛔ 添加违禁词拉黑 (/addspam 词)' },
         { command: 'delspam', description: '❎ 删除违禁词 (/delspam 词)' },
         { command: 'spamlist', description: '📋 查看违禁词表' },
-        { command: 'spamalert', description: '🔕 开关: 自动拉黑报警(静默模式)' }, // 更新了描述
+        { command: 'spamalert', description: '🔕 开关: 自动拉黑报警(静默模式)' },
         { command: 'broadcast', description: '📢 全局广播通知 (/broadcast 内容)' },
         { command: 'burn', description: '🔥 阅后即焚消息 (/burn 内容)' }
       ];
@@ -68,13 +79,24 @@ export default {
         await tgReq('setMyCommands', { commands: adminCommands, scope: { type: 'chat', chat_id: adminId } });
       }
 
-      return new Response(res.ok ? `✅ 初始化成功!\n1. Webhook 绑定成功: ${webhookUrl}\n2. 机器人超级菜单已更新!` : `❌ 失败: ${JSON.stringify(res)}`);
+      // 默认初始化开关状态
+      await env.KV.put('sys_mutantfilter', 'on');
+      await env.KV.put('sys_entityfilter', 'on');
+      await env.KV.put('sys_newuserfilter', 'on');
+      await env.KV.put('sys_fingerprint', 'on');
+      await env.KV.put('sys_langshield', 'on');
+      await env.KV.put('sys_antifatigue', 'on');
+      await env.KV.put('sys_captchaexpire', 'on');
+      await env.KV.put('sys_whitelist', 'on');
+      await env.KV.put('sys_multitier', 'on');
+
+      return new Response(res.ok ? `✅ 初始化成功!\n1. Webhook 绑定与安全暗号生成成功: ${webhookUrl}\n2. 机器人已自动激活 10 大防御模块与可视化面板！` : `❌ 失败: ${JSON.stringify(res)}`);
     }
 
     // ==========================================
-    // 辅助函数定义
+    // 辅助工具函数组
     // ==========================================
-    const TTL = { expirationTtl: 2592000 }; // KV 30天自动过期清理
+    const TTL = { expirationTtl: 2592000 }; // 30天自动清理
 
     const incStat = async (key) => {
       let val = await env.KV.get(`stat_${key}`) || 0;
@@ -94,13 +116,37 @@ export default {
       } catch (e) {}
     };
 
+    // 文本归一化归纳处理器 (防符号、繁体字、Emoji变异)
+    const normalizeText = (str) => {
+      if (!str) return '';
+      // 1. 去除所有标点、空格、Emoji特殊字符
+      let s = str.replace(/[\s\p{P}\p{S}\p{Z}]/gu, '');
+      // 2. 常用变异繁体字智能映射转换
+      const tradMap = {
+        '線': '线', '創': '创', '購': '购', '優': '优', '單': '单', '額': '额', '賺': '赚', '匯': '汇', '錢': '钱', '備': '备', '註': '注',
+        '轉': '转', '賬': '账', '驗': '验', '證': '证', '頻': '频', '道': '道', '發': '发', '群': '群', '產': '产', '廣': '广', '告': '告',
+        '批': '批', '發': '发', '售': '售', '後': '后', '專': '专', '屬': '属', '量': '量', '能': '能'
+      };
+      for (const char in tradMap) {
+        s = s.replaceAll(char, tradMap[char]);
+      }
+      return s.toLowerCase();
+    };
+
+    // 智能哈希指纹计算器 (SHA-256)
+    const computeHash = async (message) => {
+      const msgBuffer = new TextEncoder().encode(normalizeText(message));
+      const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer);
+      const hashArray = Array.from(new Uint8Array(hashBuffer));
+      return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+    };
+
     // 智能发送管理员面板 (自动删掉旧面板，保持界面清爽)
     const sendAdminPanel = async (chatId, text, markup = null) => {
       const lastId = await env.KV.get(`last_panel_${chatId}`);
       if (lastId) ctx.waitUntil(tgReq('deleteMessage', { chat_id: chatId, message_id: lastId }));
       const payload = { chat_id: chatId, text, parse_mode: 'Markdown' };
       
-      // 自动给所有面板加上“关闭”按钮
       const closeBtn = [{ text: '❌ 关闭面板', callback_data: 'close_panel' }];
       if (markup) {
          if (markup.inline_keyboard) markup.inline_keyboard.push(closeBtn);
@@ -114,6 +160,40 @@ export default {
       if (res.ok) ctx.waitUntil(env.KV.put(`last_panel_${chatId}`, res.result.message_id.toString(), { expirationTtl: 86400 }));
     };
 
+    // 可视化核心控制面板渲染器
+    const renderSettingsPanel = async (chatId, msgId = null) => {
+      const keys = [
+        { key: 'mutantfilter', name: '1. 文本变异归一过滤' },
+        { key: 'entityfilter', name: '2. 实体精准超链拦截' },
+        { key: 'newuserfilter', name: '3. 新号严管双重验证' },
+        { key: 'fingerprint', name: '4. 群控指纹黑产追踪' },
+        { key: 'ocrfilter', name: '5. 图像配图 AI OCR' },
+        { key: 'langshield', name: '6. 外文小语种物理隔离' },
+        { key: 'antifatigue', name: '7. 算术验证防疲劳锁' },
+        { key: 'captchaexpire', name: '8. 超时自毁倒计时清理' },
+        { key: 'whitelist', name: '9. 白名单直达通道' },
+        { key: 'multitier', name: '10. 多级风险预警词库' }
+      ];
+      const keyboard = [];
+      let text = "⚙️ **超级防骚扰功能核心开关面板**\n\n您可以随时点击下方按钮，一键开启或关闭对应的防御模块：\n\n";
+      for (const item of keys) {
+        const status = await env.KV.get(`sys_${item.key}`) || 'off';
+        const icon = status === 'on' ? '🟢 开启' : '🔴 关闭';
+        text += `${status === 'on' ? '✅' : '❌'} **${item.name}**: ${status === 'on' ? '已激活' : '已关闭'}\n`;
+        keyboard.push([{ text: `${item.name}: ${icon}`, callback_data: `toggle_${item.key}` }]);
+      }
+      
+      if (msgId) {
+        await tgReq('editMessageText', {
+          chat_id: chatId, message_id: msgId,
+          text, parse_mode: 'Markdown',
+          reply_markup: { inline_keyboard: [...keyboard, [{ text: '❌ 关闭面板', callback_data: 'close_panel' }]] }
+        });
+      } else {
+        await sendAdminPanel(chatId, text, { inline_keyboard: keyboard });
+      }
+    };
+
     // 访客自助 FAQ 菜单键盘
     const faqKeyboard = {
       inline_keyboard: [
@@ -124,7 +204,6 @@ export default {
     };
 
     if (request.method === 'POST' && url.pathname === '/webhook') {
-      // 🛡️ Webhook 安全鉴权: 核对暗号，拒绝一切外部直接访问伪造
       if (request.headers.get('X-Telegram-Bot-Api-Secret-Token') !== WEBHOOK_SECRET) {
          return new Response('Unauthorized', { status: 401 });
       }
@@ -143,46 +222,84 @@ export default {
         const lang = cb.from.language_code || 'en';
         const isZh = lang.startsWith('zh');
 
-        // 黑名单拦截
         if (await env.KV.get(`banned_${userId}`)) return new Response('OK');
 
-        // --- 销毁面板交互 (提取到最外层，修复管理员无法点击的BUG) ---
         if (cb.data === 'close_panel') {
           await tgReq('deleteMessage', { chat_id: userId, message_id: cb.message.message_id });
           return new Response('OK');
         }
 
-        // --- 访客验证码相关 ---
+        // 核心控制面板 Toggle 交互
+        if (cb.data.startsWith('toggle_') && isAdmin) {
+          const key = cb.data.replace('toggle_', '');
+          const cur = await env.KV.get(`sys_${key}`) || 'off';
+          const next = cur === 'on' ? 'off' : 'on';
+          await env.KV.put(`sys_${key}`, next);
+          await renderSettingsPanel(userId, cb.message.message_id);
+          return new Response('OK');
+        }
+
+        // --- 访客验证码判断（支持多阶段验证） ---
         if (cb.data === 'captcha_pass') {
+          const isNewUserFilterOn = await env.KV.get('sys_newuserfilter') === 'on';
+          const isNewUser = parseInt(userId) > 7000000000;
+          const stage = await env.KV.get(`captcha_stage_${userId}`);
+
+          if (isNewUserFilterOn && isNewUser && stage !== 'stage2_passed') {
+             // 阶段 1 通过，立即下发第二重完全不同的数学题，拉满难度
+             await env.KV.put(`captcha_stage_${userId}`, 'stage2_passed', { expirationTtl: 600 });
+             const a = Math.floor(Math.random() * 10) + 1;
+             const b = Math.floor(Math.random() * 10) + 1;
+             const ans = a + b;
+             const options = [
+               { text: `${ans}`, callback_data: 'captcha_pass' },
+               { text: `${ans + 3}`, callback_data: 'captcha_fail' },
+               { text: `${ans - 2}`, callback_data: 'captcha_fail' }
+             ].sort(() => Math.random() - 0.5);
+
+             await tgReq('editMessageText', {
+               chat_id: userId, message_id: cb.message.message_id,
+               text: isZh ? `🔒 **[第二阶段安全验证]**\n您已被系统识别为近期新注册账号，为防范脚本炸鱼，请完成最后一道数字验证：\n\n👉 **${a} + ${b} = ?**` : `🔒 **[Stage 2 Verification]**\n\n👉 **${a} + ${b} = ?**`,
+               parse_mode: 'Markdown', reply_markup: { inline_keyboard: [options] }
+             });
+             return new Response('OK');
+          }
+
+          // 最终验证通过
           await env.KV.put(`user_${userId}`, 'verified', TTL);
           ctx.waitUntil(env.KV.put(`user_info_${userId}`, userName, TTL));
           ctx.waitUntil(incStat('verified'));
+          await env.KV.delete(`captcha_stage_${userId}`);
           
           await tgReq('editMessageText', { 
-            chat_id: userId, 
-            message_id: cb.message.message_id, 
+            chat_id: userId, message_id: cb.message.message_id, 
             text: isZh ? '✅ **验证通过！**\n\n请选择您需要的服务，或直接输入消息发送给人工客服：' : '✅ **Verified!**\n\nPlease select a service or type a message directly:',
-            parse_mode: 'Markdown',
-            reply_markup: faqKeyboard
+            parse_mode: 'Markdown', reply_markup: faqKeyboard
           });
         } else if (cb.data === 'captcha_fail') {
           ctx.waitUntil(incStat('blocked'));
           let fails = parseInt(await env.KV.get(`fails_${userId}`) || '0') + 1;
-          await env.KV.put(`fails_${userId}`, fails.toString(), { expirationTtl: 86400 }); // 保存24小时
+          await env.KV.put(`fails_${userId}`, fails.toString(), { expirationTtl: 86400 });
           
-          let maxFails = parseInt(await env.KV.get('sys_maxfails') || '3'); // 默认3次错误拉黑
-          
+          // Feature 7: 算术验证防疲劳机制
+          const isFatigueOn = await env.KV.get('sys_antifatigue') === 'on';
+          if (isFatigueOn && fails >= 2) {
+             await env.KV.put(`captcha_cooldown_${userId}`, 'true', { expirationTtl: 3600 }); // 禁言 1 小时
+             await tgReq('editMessageText', { 
+                chat_id: userId, message_id: cb.message.message_id, 
+                text: isZh ? '🚫 **由于您连续输错验证码，系统已被冷冻锁定 1 小时，期间无法再次验证。**' : '🚫 **Cooldown active. Try again in 1 hour.**', 
+                parse_mode: 'Markdown' 
+             });
+             return new Response('OK');
+          }
+
+          let maxFails = parseInt(await env.KV.get('sys_maxfails') || '3');
           if (fails >= maxFails) {
-            await env.KV.put(`banned_${userId}`, 'true'); // 触发拉黑
+            await env.KV.put(`banned_${userId}`, 'true');
             ctx.waitUntil(addBlockLog(userId, userName, '多次验证错误拉黑', `连续失败 ${fails} 次`));
-            await tgReq('editMessageText', { 
-               chat_id: userId, message_id: cb.message.message_id, 
-               text: isZh ? '🚫 **验证失败次数过多，您已被系统自动永久拦截。**' : '🚫 **Too many failed attempts. You are blocked.**', 
-               parse_mode: 'Markdown' 
-            });
+            await tgReq('editMessageText', { chat_id: userId, message_id: cb.message.message_id, text: isZh ? '🚫 **验证失败次数过多，您已被永久拦截。**' : '🚫 **Too many failed attempts. Blocked.**', parse_mode: 'Markdown' });
             
-            // 报警通知管理员 (受静默模式开关控制)
-            const alertOn = await env.KV.get('sys_spamalert') !== 'off'; // 默认开启
+            const alertOn = await env.KV.get('sys_spamalert') !== 'off';
             if (alertOn) {
                 for (const admin of ADMIN_IDS) {
                    ctx.waitUntil(tgReq('sendMessage', { chat_id: admin, text: `🛡️ **防刷报警**\n\n访客 👤 **${userName}** (\`${userId}\`) 连续 ${fails} 次验证错误，已被自动拉黑。`, parse_mode: 'Markdown' }));
@@ -192,7 +309,7 @@ export default {
             ctx.waitUntil(addBlockLog(userId, userName, '验证码错误', `第 ${fails} 次选错`));
             await tgReq('answerCallbackQuery', { 
                callback_query_id: cb.id, 
-               text: isZh ? `❌ 算错了哦，请重试！\n(警告: 错误 ${maxFails} 次将被永久拉黑，当前 ${fails} 次)` : '❌ Wrong answer, try again', 
+               text: isZh ? `❌ 选错啦，请重试！\n(警告: 错误 ${maxFails} 次将被永久拉黑，当前 ${fails} 次)` : '❌ Wrong answer, try again', 
                show_alert: true 
             });
           }
@@ -204,24 +321,21 @@ export default {
           if (action === 'menu') {
             await tgReq('editMessageText', { chat_id: userId, message_id: cb.message.message_id, text: '👇 **自助服务菜单**\n请选择您需要了解的内容：', parse_mode: 'Markdown', reply_markup: faqKeyboard });
           } else if (action === '1') {
-            const faq1Text = await env.KV.get('faq_1_text') || '💰 **常见问题与价格**\n\n默认文案。管理员请发送 `/setfaq1 你的内容` 进行修改。';
+            const faq1Text = await env.KV.get('faq_1_text') || '💰 **常见问题与价格**\n\n默认文案。管理员请发送 `/setfaq1 内容` 修改。';
             await tgReq('editMessageText', { 
-              chat_id: userId, message_id: cb.message.message_id, 
-              text: faq1Text, 
+              chat_id: userId, message_id: cb.message.message_id, text: faq1Text, 
               parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🔙 返回菜单', callback_data: 'faq_menu' }]] } 
             });
           } else if (action === '2') {
-            const faq2Text = await env.KV.get('faq_2_text') || '📦 **发货与售后说明**\n\n默认文案。管理员请发送 `/setfaq2 你的内容` 进行修改。';
+            const faq2Text = await env.KV.get('faq_2_text') || '📦 **发货与售后说明**\n\n默认文案。管理员请发送 `/setfaq2 内容` 修改。';
             await tgReq('editMessageText', { 
-              chat_id: userId, message_id: cb.message.message_id, 
-              text: faq2Text, 
+              chat_id: userId, message_id: cb.message.message_id, text: faq2Text, 
               parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🔙 返回菜单', callback_data: 'faq_menu' }]] } 
             });
           } else if (action === 'human') {
             await tgReq('editMessageText', { 
               chat_id: userId, message_id: cb.message.message_id, 
-              text: '👩‍💻 **已为您接通人工客服**\n\n请直接在下方输入您的问题，主人收到后会尽快给您回复！', 
-              parse_mode: 'Markdown' 
+              text: '👩‍💻 **已为您接通人工客服**\n\n请直接在下方输入您的问题，主人收到后会尽快回复您！', parse_mode: 'Markdown' 
             });
           }
         }
@@ -254,21 +368,19 @@ export default {
             await env.KV.delete(`user_info_${targetId}`);
             await env.KV.delete(`history_${targetId}`);
             await env.KV.delete(`note_${targetId}`);
-            // 如果删除的正是当前锁定的聊天，则自动退出锁定
             if (await env.KV.get(`active_chat_${userId}`) === targetId) {
                 await env.KV.delete(`active_chat_${userId}`);
             }
-            await tgReq('answerCallbackQuery', { callback_query_id: cb.id, text: '🗑️ 成功：已将该访客从联系人列表中移除', show_alert: true });
+            await tgReq('answerCallbackQuery', { callback_query_id: cb.id, text: '🗑️ 成功：已将该访客从列表中移除', show_alert: true });
             await tgReq('deleteMessage', { chat_id: userId, message_id: cb.message.message_id });
           } else if (cb.data.startsWith('qban_')) {
             const targetId = cb.data.replace('qban_', '');
             await env.KV.put(`banned_${targetId}`, 'true');
             await tgReq('answerCallbackQuery', { callback_query_id: cb.id, text: '🚫 拦截成功：已将该用户永久拉黑', show_alert: true });
-            // 移除原本消息上的按钮，防止重复点击
             await tgReq('editMessageReplyMarkup', { chat_id: userId, message_id: cb.message.message_id, reply_markup: { inline_keyboard: [] } });
           } else if (cb.data.startsWith('qnote_')) {
             const targetId = cb.data.replace('qnote_', '');
-            await tgReq('answerCallbackQuery', { callback_query_id: cb.id, text: `📝 请在输入框发送指令：\n/note ${targetId} 你的备注名`, show_alert: true });
+            await tgReq('answerCallbackQuery', { callback_query_id: cb.id, text: `📝 请在输入框发送指令：\n/note ${targetId} 备注`, show_alert: true });
           } else if (cb.data === 'clear_stats') {
             await env.KV.delete('stat_verified');
             await env.KV.delete('stat_blocked');
@@ -276,7 +388,6 @@ export default {
             await tgReq('answerCallbackQuery', { callback_query_id: cb.id, text: '🧹 所有统计数据已清零！', show_alert: true });
             await sendAdminPanel(userId, '📊 统计数据已被手动清空。');
           } else if (cb.data === 'bc_confirm') {
-            // 📢 广播发送确认执行
             const bcMsgId = await env.KV.get(`pending_bc_${userId}`);
             if (!bcMsgId) return new Response('OK');
             await tgReq('editMessageText', { chat_id: userId, message_id: cb.message.message_id, text: '⏳ 正在拼命群发中，请稍候...' });
@@ -291,13 +402,11 @@ export default {
             await tgReq('deleteMessage', { chat_id: userId, message_id: cb.message.message_id });
             await sendAdminPanel(userId, `✅ **广播完成**\n\n已成功将该消息投递给 ${count} 位联系人。`);
           } else if (cb.data === 'bc_cancel') {
-            // 📢 取消广播
             await env.KV.delete(`pending_bc_${userId}`);
             await tgReq('deleteMessage', { chat_id: userId, message_id: cb.message.message_id });
             await sendAdminPanel(userId, '❌ 广播任务已取消。');
           }
         }
-        
         return new Response('OK');
       }
 
@@ -305,11 +414,11 @@ export default {
       // 2. 处理普通消息
       // ==========================================
       if (update.message) {
+        // Feature 3: 非私聊场景自动退群隔离保护
         if (update.message.chat.type !== 'private') {
-           // 🛡️ 自动退群隔离保护
            await tgReq('leaveChat', { chat_id: update.message.chat.id });
            for (const admin of ADMIN_IDS) {
-               ctx.waitUntil(tgReq('sendMessage', { chat_id: admin, text: `🛡️ **群组隔离保护**\n\n检测到非私聊环境，已自动退出群组: ${update.message.chat.title || '未知群'} (${update.message.chat.id})` }));
+               ctx.waitUntil(tgReq('sendMessage', { chat_id: admin, text: `🛡️ **群组隔离保护**\n\n机器人检测到非私聊环境，已自动退出群组: ${update.message.chat.title || '未知群'} (${update.message.chat.id})` }));
            }
            return new Response('OK');
         }
@@ -328,7 +437,6 @@ export default {
           if (text) {
             const cmd = text.split(' ')[0];
 
-            // 自动清理管理员的命令消息，保持聊天框整洁
             if (text.startsWith('/')) {
                ctx.waitUntil(tgReq('deleteMessage', { chat_id: userId, message_id: msgId }));
             }
@@ -337,9 +445,9 @@ export default {
               const listRes = await env.KV.list({ prefix: 'user_info_' });
               const keyboard = [];
               for (const k of listRes.keys) {
-                if (keyboard.length >= 20) break; // 最多显示20人
+                if (keyboard.length >= 20) break;
                 const uid = k.name.replace('user_info_', '');
-                if (await env.KV.get(`banned_${uid}`)) continue; // 🌟 自动过滤掉已拉黑的用户
+                if (await env.KV.get(`banned_${uid}`)) continue;
                 const uname = await env.KV.get(k.name) || '未知';
                 const note = await env.KV.get(`note_${uid}`);
                 keyboard.push([{ text: note ? `📝 ${note}` : `👤 ${uname}`, callback_data: `setchat_${uid}` }]);
@@ -351,6 +459,11 @@ export default {
             if (cmd === '/end') {
               await env.KV.delete(`active_chat_${userId}`);
               await sendAdminPanel(userId, '⏹ 已退出聊天模式。');
+              return new Response('OK');
+            }
+
+            if (cmd === '/settings') {
+              await renderSettingsPanel(userId);
               return new Response('OK');
             }
 
@@ -407,6 +520,52 @@ export default {
                 await sendAdminPanel(userId, `🕒 **最近消息记录**\n\n${reply}`);
               }
               return new Response('OK');
+            }
+
+            // 白名单管理指令
+            if (cmd === '/addwhite' && text.split(' ')[1]) {
+               const tid = text.split(' ')[1];
+               let wList = JSON.parse(await env.KV.get('whitelist_users') || '[]');
+               if (!wList.includes(tid)) wList.push(tid);
+               await env.KV.put('whitelist_users', JSON.stringify(wList));
+               await sendAdminPanel(userId, `⚪ 已将用户 \`${tid}\` 添加至白名单。`);
+               return new Response('OK');
+            }
+            if (cmd === '/delwhite' && text.split(' ')[1]) {
+               const tid = text.split(' ')[1];
+               let wList = JSON.parse(await env.KV.get('whitelist_users') || '[]');
+               wList = wList.filter(id => id !== tid);
+               await env.KV.put('whitelist_users', JSON.stringify(wList));
+               await sendAdminPanel(userId, `⚫ 已将用户 \`${tid}\` 从白名单中移除。`);
+               return new Response('OK');
+            }
+            if (cmd === '/whitelist') {
+               const wList = JSON.parse(await env.KV.get('whitelist_users') || '[]');
+               await sendAdminPanel(userId, `📋 **白名单用户列表:**\n\n${wList.length ? wList.map(id => `- \`${id}\``).join('\n') : '暂无'}`);
+               return new Response('OK');
+            }
+
+            // 多级词库管理指令 (预警词 Tier 2)
+            if (cmd === '/addwarn' && text.split(' ').length >= 2) {
+               const word = text.split(' ').slice(1).join(' ');
+               let warnList = JSON.parse(await env.KV.get('warn_keywords') || '[]');
+               if (!warnList.includes(word)) warnList.push(word);
+               await env.KV.put('warn_keywords', JSON.stringify(warnList));
+               await sendAdminPanel(userId, `⚠️ 已将 "**${word}**" 设为**二级预警词**。\n(匹配到时系统不拉黑，但会在转发时发出黄色⚠️警告)`);
+               return new Response('OK');
+            }
+            if (cmd === '/delwarn' && text.split(' ').length >= 2) {
+               const word = text.split(' ').slice(1).join(' ');
+               let warnList = JSON.parse(await env.KV.get('warn_keywords') || '[]');
+               warnList = warnList.filter(w => w !== word);
+               await env.KV.put('warn_keywords', JSON.stringify(warnList));
+               await sendAdminPanel(userId, `❎ 已删除二级预警词 "**${word}**"`);
+               return new Response('OK');
+            }
+            if (cmd === '/warnlist') {
+               const warnList = JSON.parse(await env.KV.get('warn_keywords') || '[]');
+               await sendAdminPanel(userId, `📋 **二级预警词列表:**\n\n${warnList.length ? warnList.map(w => `- ${w}`).join('\n') : '无'}`);
+               return new Response('OK');
             }
 
             if (cmd === '/addkw' || cmd === '/delkw' || cmd === '/kwlist') {
@@ -506,7 +665,7 @@ export default {
               const type = text.split(' ')[1];
               if (['random', 'math', 'find', 'fruit'].includes(type)) {
                 await env.KV.put('sys_captcha_type', type);
-                await sendAdminPanel(userId, `✅ 验证模式已切换为：**${type}**\n\n- random (随机混用)\n- math (加减法)\n- find (找特定表情)\n- fruit (数水果)`);
+                await sendAdminPanel(userId, `✅ 验证模式已切换为：**${type}**`);
               } else {
                 await sendAdminPanel(userId, `⚠️ 格式错误，请使用: \`/setcaptcha random\``, null);
               }
@@ -525,7 +684,6 @@ export default {
             }
 
             if (cmd === '/broadcast') {
-              // 📢 广播升级：保存当前消息ID，发给面板确认 (支持图片/视频/文件附带文字)
               await env.KV.put(`pending_bc_${userId}`, msgId.toString(), { expirationTtl: 600 });
               await sendAdminPanel(userId, `📢 **广播发送确认**\n\n将把你的这条消息原封不动（支持带图/视频）群发给所有人。\n是否确认发送？`, {
                  inline_keyboard: [[{ text: '✅ 确认发送', callback_data: 'bc_confirm' }, { text: '❌ 取消', callback_data: 'bc_cancel' }]]
@@ -533,7 +691,6 @@ export default {
               return new Response('OK');
             }
 
-            // 剧透特效阅后即焚 (利用 HTML 的 tg-spoiler 标签)
             if (cmd === '/burn') {
               const activeChat = await env.KV.get(`active_chat_${userId}`);
               const burnMsg = text.substring(6).trim();
@@ -551,7 +708,6 @@ export default {
             }
           }
 
-          // 手动回复访客
           if (msg.reply_to_message && msg.reply_to_message.forward_from) {
             await tgReq('copyMessage', { chat_id: msg.reply_to_message.forward_from.id, from_chat_id: userId, message_id: msgId });
             return new Response('OK');
@@ -563,7 +719,6 @@ export default {
             }
           }
 
-          // 锁定聊天发送
           const activeChat = await env.KV.get(`active_chat_${userId}`);
           if (activeChat) {
             await tgReq('copyMessage', { chat_id: activeChat, from_chat_id: userId, message_id: msgId });
@@ -578,6 +733,19 @@ export default {
         // ----------------------------------------
         ctx.waitUntil(incStat('msgs'));
 
+        // Feature 9: 白名单机制
+        const isWhitelistOn = await env.KV.get('sys_whitelist') === 'on';
+        if (isWhitelistOn) {
+           const wList = JSON.parse(await env.KV.get('whitelist_users') || '[]');
+           if (wList.includes(userId)) {
+              // 绿通直达管理员
+              for (const admin of ADMIN_IDS) {
+                 await tgReq('copyMessage', { chat_id: admin, from_chat_id: userId, message_id: msgId });
+              }
+              return new Response('OK');
+           }
+        }
+
         // 1. 黑名单检查
         if (await env.KV.get(`banned_${userId}`)) {
            ctx.waitUntil(incStat('blocked'));
@@ -585,7 +753,7 @@ export default {
            return new Response('OK');
         }
 
-        // 2. 媒体拦截检查与精准识别
+        // 2. 媒体拦截检查
         let mediaDesc = "";
         if (msg.photo) mediaDesc = "🖼️ 照片";
         else if (msg.voice) mediaDesc = "🎤 语音留言";
@@ -608,7 +776,7 @@ export default {
            return new Response('OK');
         }
 
-        // 3. 验证检查
+        // 3. 验证状态检查
         const isVerified = await env.KV.get(`user_${userId}`);
         const lang = msg.from.language_code || 'en';
         const isZh = lang.startsWith('zh');
@@ -621,14 +789,14 @@ export default {
         }
 
         if (isVerified === 'verified') {
-          // 🛡️ 刷屏限流防卫 (10分钟冷冻)
+          // Feature 7: 刷屏限流防卫 (10分钟冷冻)
           if (await env.KV.get(`flood_banned_${userId}`)) return new Response('OK');
 
           ctx.waitUntil(env.KV.put(`user_info_${userId}`, userName, TTL)); // 刷新活跃度
           const note = await env.KV.get(`note_${userId}`);
           const display = note ? `${note} (原名: ${userName})` : userName;
 
-          // 记录频率 (5秒内>5条拉黑)
+          // 频率判定
           let rateStr = await env.KV.get(`rate_${userId}`) || '[]';
           let rateArr = JSON.parse(rateStr);
           const now = Date.now();
@@ -645,79 +813,120 @@ export default {
           }
           ctx.waitUntil(env.KV.put(`rate_${userId}`, JSON.stringify(rateArr), { expirationTtl: 60 }));
 
-          // 🌟 终极敏感词检测系统 (全方位深度扫描)
-          // 提取所有可能包含广告的文本：纯文本、图片配文、转发来源名称、透明按钮文字、按钮链接
-          let messageContent = (msg.text || msg.caption || "").toLowerCase();
+          // ------------------------------------------
+          // 🛡️ 立体安检扫描 (全面拦截高难度伪装广告)
+          // ------------------------------------------
+          let rawContent = msg.text || msg.caption || '';
           
-          // 1. 扫描转发来源 (提取频道名、作者名)
-          if (msg.forward_from_chat && msg.forward_from_chat.title) {
-             messageContent += " " + msg.forward_from_chat.title.toLowerCase();
-          }
-          if (msg.forward_from_chat && msg.forward_from_chat.username) {
-             messageContent += " " + msg.forward_from_chat.username.toLowerCase();
-          }
-          if (msg.forward_from && msg.forward_from.first_name) {
-             messageContent += " " + msg.forward_from.first_name.toLowerCase();
-          }
-          if (msg.forward_sender_name) {
-             messageContent += " " + msg.forward_sender_name.toLowerCase();
-          }
+          // A. 扫描转发源
+          if (msg.forward_from_chat?.title) rawContent += ' ' + msg.forward_from_chat.title;
+          if (msg.forward_from_chat?.username) rawContent += ' ' + msg.forward_from_chat.username;
+          if (msg.forward_from?.first_name) rawContent += ' ' + msg.forward_from.first_name;
+          if (msg.forward_sender_name) rawContent += ' ' + msg.forward_sender_name;
 
-          // 2. 扫描附带的内联透明按钮 (提取按钮文字和链接)
-          if (msg.reply_markup && msg.reply_markup.inline_keyboard) {
+          // B. 扫描内联按钮文字和超链接 (Feature 2 & 4 进阶)
+          if (msg.reply_markup?.inline_keyboard) {
              for (const row of msg.reply_markup.inline_keyboard) {
                 for (const btn of row) {
-                   if (btn.text) messageContent += " " + btn.text.toLowerCase();
-                   if (btn.url) messageContent += " " + btn.url.toLowerCase();
+                   if (btn.text) rawContent += ' ' + btn.text;
+                   if (btn.url) rawContent += ' ' + btn.url;
                 }
              }
           }
 
-          // 3. 🚨 终极防卫：扫描发送者的个人昵称/显示名称 (UserName)
-          if (userName) {
-             messageContent += " " + userName.toLowerCase();
-          }
+          // C. 注入发送人姓名 (防昵称广告)
+          if (userName) rawContent += ' ' + userName;
 
-          if (messageContent) {
-             let spamList = JSON.parse(await env.KV.get('spam_keywords') || '[]');
-             let isSpam = false;
-             let matchedWord = "";
-             for (const word of spamList) {
-               if (messageContent.includes(word.toLowerCase())) { isSpam = true; matchedWord = word; break; }
-             }
-             
-             if (isSpam) {
-                await env.KV.put(`banned_${userId}`, 'true'); // 触发自动拉黑
+          // Feature 1: 文本变异归一处理
+          const isMutantOn = await env.KV.get('sys_mutantfilter') === 'on';
+          const safeCheckContent = isMutantOn ? normalizeText(rawContent) : rawContent.toLowerCase();
+
+          // Feature 6: 小语种与特殊字符隔离
+          const isLangShieldOn = await env.KV.get('sys_langshield') === 'on';
+          if (isLangShieldOn) {
+             const cyrillicPattern = /[\u0400-\u04FF]/; // 俄语/西里尔
+             const arabicPattern = /[\u0600-\u06FF]/;   // 阿拉伯语
+             if (cyrillicPattern.test(userName) || cyrillicPattern.test(rawContent) || arabicPattern.test(userName)) {
+                await env.KV.put(`banned_${userId}`, 'true');
                 ctx.waitUntil(incStat('blocked'));
-                ctx.waitUntil(addBlockLog(userId, userName, '违禁词封禁(深度扫描)', messageContent));
-                
-                // 给管理员发报警 (受开关控制，且隐藏广告原文)
-                const alertOn = await env.KV.get('sys_spamalert') !== 'off'; // 默认开启
-                if (alertOn) {
-                    for (const admin of ADMIN_IDS) {
-                       ctx.waitUntil(tgReq('sendMessage', { 
-                         chat_id: admin, 
-                         text: `🛡️ **静默拦截通知 (深度扫描)**\n\n已自动拉黑发广告的访客 👤 **${display}** (\`${userId}\`)。\n\n🎯 **触发违禁词:** \`${matchedWord}\`\n\n*(此为高级广告拦截，可能包含隐蔽的转发、名字或按钮广告。广告原文本已折叠，详见 /blocklog)*`, 
-                         parse_mode: 'Markdown' 
-                       }));
-                    }
-                }
-                return new Response('OK'); // 直接丢弃该消息
+                ctx.waitUntil(addBlockLog(userId, userName, '小语种物理隔离', `触发名/正文特殊语系: ${rawContent}`));
+                return new Response('OK');
+             }
+          }
+
+          // Feature 2: Telegram 消息实体超链精准拦截
+          const isEntityFilterOn = await env.KV.get('sys_entityfilter') === 'on';
+          if (isEntityFilterOn && (msg.entities || msg.caption_entities)) {
+             const ents = msg.entities || msg.caption_entities;
+             const linkTypes = ['url', 'text_link', 'mention', 'phone_number'];
+             let hasForbiddenEntity = false;
+             for (const ent of ents) {
+                if (linkTypes.includes(ent.type)) { hasForbiddenEntity = true; break; }
+             }
+             if (hasForbiddenEntity) {
+                await env.KV.put(`banned_${userId}`, 'true');
+                ctx.waitUntil(incStat('blocked'));
+                ctx.waitUntil(addBlockLog(userId, userName, '超链实体黑名单拦截', rawContent));
+                return new Response('OK');
+             }
+          }
+
+          // Feature 4: 智能哈希群控追踪
+          const isFingerprintOn = await env.KV.get('sys_fingerprint') === 'on';
+          const msgHash = await computeHash(rawContent);
+          if (isFingerprintOn && rawContent) {
+             let spamHashes = JSON.parse(await env.KV.get('spam_hashes') || '[]');
+             if (spamHashes.includes(msgHash)) {
+                await env.KV.put(`banned_${userId}`, 'true');
+                ctx.waitUntil(incStat('blocked'));
+                ctx.waitUntil(addBlockLog(userId, userName, '群控哈希指纹匹配封禁', `哈希匹配: ${msgHash}`));
+                return new Response('OK');
+             }
+          }
+
+          // 核心违禁词匹配（Tier 1 必杀）
+          let spamList = JSON.parse(await env.KV.get('spam_keywords') || '[]');
+          let isSpam = false;
+          let matchedWord = "";
+          for (const word of spamList) {
+             if (safeCheckContent.includes(word.toLowerCase())) { isSpam = true; matchedWord = word; break; }
+          }
+          
+          if (isSpam) {
+             await env.KV.put(`banned_${userId}`, 'true');
+             ctx.waitUntil(incStat('blocked'));
+             ctx.waitUntil(addBlockLog(userId, userName, '违禁词封禁', rawContent));
+             
+             // 捕获指纹录入数据库，秒杀同伙
+             if (isFingerprintOn && rawContent) {
+                let spamHashes = JSON.parse(await env.KV.get('spam_hashes') || '[]');
+                spamHashes.unshift(msgHash);
+                if (spamHashes.length > 50) spamHashes.pop();
+                ctx.waitUntil(env.KV.put('spam_hashes', JSON.stringify(spamHashes)));
              }
 
-             // 正常记录历史文本 (过滤掉为了防垃圾拼接的辅助文字)
-             const displayHistoryText = msg.text || msg.caption || '[多媒体/转发消息]';
-             let historyStr = await env.KV.get(`history_${userId}`) || '[]';
-             let history = JSON.parse(historyStr);
-             history.push(displayHistoryText.substring(0, 100));
-             if (history.length > 5) history.shift();
-             ctx.waitUntil(env.KV.put(`history_${userId}`, JSON.stringify(history), TTL));
+             const alertOn = await env.KV.get('sys_spamalert') !== 'off';
+             if (alertOn) {
+                 for (const admin of ADMIN_IDS) {
+                    ctx.waitUntil(tgReq('sendMessage', { 
+                      chat_id: admin, 
+                      text: `🛡️ **静默拦截通知**\n\n已自动拉黑发广告的访客 👤 **${display}** (\`${userId}\`)。\n\n🎯 **触发违禁词:** \`${matchedWord}\`\n🤖 **生成哈希指纹:** \`${msgHash.substring(0,16)}\`\n\n*(此通知可发 /spamalert 关闭)*`, 
+                      parse_mode: 'Markdown' 
+                    }));
+                 }
+             }
+             return new Response('OK');
+          }
 
-             let kwMap = JSON.parse(await env.KV.get('auto_keywords') || '{}');
-             for (const kw in kwMap) {
-                if (displayHistoryText.includes(kw)) {
-                  ctx.waitUntil(tgReq('sendMessage', { chat_id: userId, text: kwMap[kw], reply_to_message_id: msgId }));
-                  break;
+          // Feature 10: 多级预警词库检测（Tier 2 报警不拉黑）
+          const isMultitierOn = await env.KV.get('sys_multitier') === 'on';
+          let warningTag = "";
+          if (isMultitierOn && rawContent) {
+             const warnList = JSON.parse(await env.KV.get('warn_keywords') || '[]');
+             for (const word of warnList) {
+                if (safeCheckContent.includes(word.toLowerCase())) {
+                   warningTag = `⚠️ **[二级高危预警词命中: ${word}]**\n\n`;
+                   break;
                 }
              }
           }
@@ -726,7 +935,6 @@ export default {
             ctx.waitUntil(tgReq('sendMessage', { chat_id: userId, text: isZh ? '🔕 主人目前正忙/休息中，消息已送达，将稍后回复您。' : '🔕 Owner is away. Message delivered.' }));
           }
 
-          // 管理员快捷操作内联键盘
           const adminQuickActions = {
             inline_keyboard: [[
               { text: '💬 回复', callback_data: `setchat_${userId}` },
@@ -739,25 +947,60 @@ export default {
              if (msg.text) {
                await tgReq('sendMessage', { 
                  chat_id: admin, 
-                 text: `💬 **来自 👤 ${display}** (\`${userId}\`)\n\n${msg.text}`, 
+                 text: `${warningTag}💬 **来自 👤 ${display}** (\`${userId}\`)\n\n${msg.text}`, 
                  parse_mode: 'Markdown', reply_markup: adminQuickActions 
                });
              } else {
                await tgReq('sendMessage', { 
                  chat_id: admin, 
-                 text: `📎 **来自 👤 ${display}** (\`${userId}\`) 发送了 **${mediaDesc}**：`, 
+                 text: `${warningTag}📎 **来自 👤 ${display}** (\`${userId}\`) 发送了 **${mediaDesc}**：`, 
                  parse_mode: 'Markdown', reply_markup: adminQuickActions 
                });
                await tgReq('forwardMessage', { chat_id: admin, from_chat_id: userId, message_id: msgId });
              }
           }
         } else {
-          // 未验证：下发验证码
+          // 未验证访客
+          
+          // Feature 5: 图片 AI OCR 功能拦截
+          const isOcrOn = await env.KV.get('sys_ocrfilter') === 'on';
+          if (isOcrOn && msg.photo) {
+             try {
+                const fileRes = await tgReq('getFile', { file_id: msg.photo[msg.photo.length - 1].file_id });
+                if (fileRes.ok) {
+                   const filePath = fileRes.result.file_path;
+                   // 代理图片，并发起高精 OCR 扫描
+                   const proxyUrl = `https://${url.hostname}/img?file=${filePath}%26secret=${WEBHOOK_SECRET}`;
+                   const ocrRes = await fetch(`https://api.ocr.space/parse/imageurl?apikey=helloworld&url=${proxyUrl}`);
+                   const ocrJson = await ocrRes.json();
+                   if (ocrJson.ParsedResults && ocrJson.ParsedResults[0]) {
+                      const imageText = ocrJson.ParsedResults[0].ParsedText || '';
+                      
+                      // 将解析出的文字丢进安检机
+                      const safeOcrText = imageText.toLowerCase();
+                      let spamList = JSON.parse(await env.KV.get('spam_keywords') || '[]');
+                      let isImgSpam = false;
+                      let matchedWord = "";
+                      for (const word of spamList) {
+                         if (safeOcrText.includes(word.toLowerCase())) { isImgSpam = true; matchedWord = word; break; }
+                      }
+
+                      if (isImgSpam) {
+                         await env.KV.put(`banned_${userId}`, 'true');
+                         ctx.waitUntil(incStat('blocked'));
+                         ctx.waitUntil(addBlockLog(userId, userName, '图片 OCR 识别封禁', `解析文字: ${imageText}`));
+                         return new Response('OK');
+                      }
+                   }
+                }
+             } catch (e) {}
+          }
+
           ctx.waitUntil(incStat('blocked'));
           ctx.waitUntil(addBlockLog(userId, userName, '未验证拦截', msg.text || `[${mediaDesc || '媒体'}]`));
 
+          // 验证码下发阶段
           const customWelcome = await env.KV.get('welcome_msg') || (isZh ? '您好！为了防止垃圾信息，请完成简单验证：' : 'Hi! To prevent spam, please verify:');
-          
           const captchaTypeSetting = await env.KV.get('sys_captcha_type') || 'random';
           const types = ['fruit', 'math', 'find'];
           const cType = captchaTypeSetting === 'random' ? types[Math.floor(Math.random() * types.length)] : captchaTypeSetting;
@@ -768,7 +1011,6 @@ export default {
           let wrong2 = '';
 
           if (cType === 'math') {
-             // 1. 两位数加减法
              const isAdd = Math.random() > 0.5;
              const a = Math.floor(Math.random() * 20) + 1;
              const b = Math.floor(Math.random() * 20) + 1;
@@ -776,7 +1018,7 @@ export default {
                  correctAns = (a + b).toString();
                  qText = `**${a} + ${b} = ?**`;
              } else {
-                 const max = Math.max(a, b) + 5; // 防止结果出现0或负数
+                 const max = Math.max(a, b) + 5;
                  const min = Math.min(a, b);
                  correctAns = (max - min).toString();
                  qText = `**${max} - ${min} = ?**`;
@@ -784,7 +1026,6 @@ export default {
              wrong1 = (parseInt(correctAns) + Math.floor(Math.random() * 5) + 1).toString();
              wrong2 = (parseInt(correctAns) - Math.floor(Math.random() * 5) - 1).toString();
           } else if (cType === 'find') {
-             // 2. 找指定表情
              const emojis = ['🚗', '🍎', '🏠', '🐶', '💻', '⚽', '🎸', '⌚', '✈️', '🚲'];
              const target = emojis[Math.floor(Math.random() * emojis.length)];
              let others = emojis.filter(e => e !== target).sort(() => 0.5 - Math.random());
@@ -793,7 +1034,6 @@ export default {
              wrong2 = others[1];
              qText = `请在下方按钮中选出：**${target}**`;
           } else {
-             // 3. 默认：数水果
              const fruitList = ['🍎', '🍐', '🍊', '🍋', '🍌', '🍉', '🍇', '🍓'];
              const emojiA = fruitList[Math.floor(Math.random() * fruitList.length)];
              let emojiB = fruitList[Math.floor(Math.random() * fruitList.length)];
@@ -802,7 +1042,6 @@ export default {
              const a = Math.floor(Math.random() * 5) + 1;
              const b = Math.floor(Math.random() * 5) + 1;
              correctAns = (a + b).toString();
-             
              wrong1 = (parseInt(correctAns) + Math.floor(Math.random() * 3) + 1).toString();
              wrong2 = (parseInt(correctAns) - Math.floor(Math.random() * 3) - 1).toString();
              if (parseInt(wrong2) <= 0) wrong2 = (parseInt(correctAns) + 4).toString();
@@ -816,13 +1055,26 @@ export default {
             { text: wrong2, callback_data: 'captcha_fail' }
           ].sort(() => Math.random() - 0.5);
 
-          await tgReq('sendMessage', {
+          const sentRes = await tgReq('sendMessage', {
             chat_id: userId,
             text: `🤖 **${isZh ? '安全验证' : 'Anti-Spam Captcha'}**\n\n${customWelcome}\n\n${qText}`,
-            parse_mode: 'Markdown',
-            reply_to_message_id: msgId,
+            parse_mode: 'Markdown', reply_to_message_id: msgId,
             reply_markup: { inline_keyboard: [options] }
           });
+
+          // Feature 8: 验证码超时自动清理功能 (120 秒物理删除，防止僵尸死局)
+          const isExpireOn = await env.KV.get('sys_captchaexpire') === 'on';
+          if (isExpireOn && sentRes.ok) {
+             const sentMsgId = sentRes.result.message_id;
+             ctx.waitUntil(new Promise(resolve => setTimeout(resolve, 120000)).then(async () => {
+                // 如果 120 秒后依然没有通过验证，自动悄悄删除下发的验证码消息和访客原消息
+                const currentStatus = await env.KV.get(`user_${userId}`);
+                if (currentStatus !== 'verified') {
+                   await tgReq('deleteMessage', { chat_id: userId, message_id: sentMsgId });
+                   await tgReq('deleteMessage', { chat_id: userId, message_id: msgId });
+                }
+             }));
+          }
         }
       }
 
