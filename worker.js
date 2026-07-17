@@ -673,6 +673,11 @@ export default {
              }
           }
 
+          // 3. 🚨 终极防卫：扫描发送者的个人昵称/显示名称 (UserName)
+          if (userName) {
+             messageContent += " " + userName.toLowerCase();
+          }
+
           if (messageContent) {
              let spamList = JSON.parse(await env.KV.get('spam_keywords') || '[]');
              let isSpam = false;
@@ -692,7 +697,7 @@ export default {
                     for (const admin of ADMIN_IDS) {
                        ctx.waitUntil(tgReq('sendMessage', { 
                          chat_id: admin, 
-                         text: `🛡️ **静默拦截通知 (深度扫描)**\n\n已自动拉黑发广告的访客 👤 **${display}** (\`${userId}\`)。\n\n🎯 **触发违禁词:** \`${matchedWord}\`\n\n*(此为高级广告拦截，可能包含隐蔽的转发或按钮广告。广告原文本已折叠，详见 /blocklog)*`, 
+                         text: `🛡️ **静默拦截通知 (深度扫描)**\n\n已自动拉黑发广告的访客 👤 **${display}** (\`${userId}\`)。\n\n🎯 **触发违禁词:** \`${matchedWord}\`\n\n*(此为高级广告拦截，可能包含隐蔽的转发、名字或按钮广告。广告原文本已折叠，详见 /blocklog)*`, 
                          parse_mode: 'Markdown' 
                        }));
                     }
